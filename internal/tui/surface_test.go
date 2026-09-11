@@ -226,3 +226,28 @@ func TestSurfacePaneOpenURLGating(t *testing.T) {
 		t.Fatalf("refusal missing:\n%s", a.surfacePane.View(80, 20))
 	}
 }
+
+// A non-http(s) openUrl (javascript:, file:, …) is a validation error: it
+// must surface as an error status, never reach the y/n prompt.
+func TestSurfacePaneOpenURLBadSchemeIsRefusedNotPrompted(t *testing.T) {
+	a := newTestApp(t, nil)
+	deliverSurface(t, a, formEnvelopeJSON)
+	update(t, a, tea.KeyMsg{Type: tea.KeyCtrlF})
+	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Ada")})
+
+	// Swap the button for a local openUrl call with a refused scheme.
+	deliverSurface(t, a, `{"version":"v1.0","updateComponents":{"surfaceId":"tui-form",
+		"components":[{"id":"submit-btn","component":"Button","child":"submit-btn-label",
+			"action":{"functionCall":{"call":"openUrl","args":{"url":"javascript:alert(1)"}}}},
+			{"id":"submit-btn-label","component":"Text","text":"Open docs"}]}}`)
+
+	update(t, a, tea.KeyMsg{Type: tea.KeyTab})
+	update(t, a, tea.KeyMsg{Type: tea.KeyEnter})
+	if a.surfacePane.PromptActive() {
+		t.Fatal("non-http(s) URL reached the y/n prompt")
+	}
+	view := a.surfacePane.View(80, 20)
+	if !strings.Contains(view, "refused non-http(s)") {
+		t.Fatalf("validation error not surfaced:\n%s", view)
+	}
+}

@@ -10,10 +10,11 @@ import (
 func TestHelpOverlayTogglesAndRenders(t *testing.T) {
 	a := newTestApp(t, nil)
 
-	// ? opens the overlay.
-	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	// f1 opens the overlay (with the chat input focused, ? must type
+	// instead — see keys_test.go).
+	update(t, a, tea.KeyMsg{Type: tea.KeyF1})
 	if !a.helpOpen {
-		t.Fatal("? did not open the help overlay")
+		t.Fatal("f1 did not open the help overlay")
 	}
 	view := stripStyle(a.View())
 	for _, want := range []string{
@@ -21,8 +22,10 @@ func TestHelpOverlayTogglesAndRenders(t *testing.T) {
 		"keys", "commands",
 		// key.Binding help data + the console binding added in M9
 		"ctrl+e", "ctrl+w", "ctrl+k",
+		// per-pane hints
+		"ctrl+l", "wire: clear",
 		// footer
-		"? / esc close",
+		"f1 / ? / esc close",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("overlay missing %q:\n%s", want, view)
@@ -48,10 +51,10 @@ func TestHelpOverlayTogglesAndRenders(t *testing.T) {
 
 func TestHelpOverlayQuestionKeyCloses(t *testing.T) {
 	a := newTestApp(t, nil)
-	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	update(t, a, tea.KeyMsg{Type: tea.KeyF1})
 	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	if a.helpOpen {
-		t.Fatal("? should toggle the overlay closed")
+		t.Fatal("? should close the open overlay")
 	}
 }
 
@@ -61,7 +64,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 	// outgrows the viewport and scrolling has something to do.
 	a.width, a.height = 46, 15
 	a.layout()
-	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	update(t, a, tea.KeyMsg{Type: tea.KeyF1})
 	_ = a.View() // size the viewport before scrolling
 	before := a.helpPane.viewport.YOffset
 	update(t, a, tea.KeyMsg{Type: tea.KeyDown})
@@ -80,7 +83,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 
 func TestHelpOverlayClosesOnOtherKeysAndRoutes(t *testing.T) {
 	a := newTestApp(t, nil)
-	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	update(t, a, tea.KeyMsg{Type: tea.KeyF1})
 	// ctrl+k closes the overlay AND opens the tasks dashboard.
 	update(t, a, tea.KeyMsg{Type: tea.KeyCtrlK})
 	if a.helpOpen {

@@ -177,7 +177,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.refreshTranscript()
 
 	case tea.KeyMsg:
-		// The help overlay owns esc/? and the scroll keys while open; any
+		// The help overlay owns esc/?/f1 and the scroll keys while open; any
 		// other key closes it and keeps routing (so ctrl+k still opens the
 		// dashboard, ctrl+c still quits, typing still lands in the input).
 		if a.helpOpen {
@@ -239,7 +239,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmd, _ := a.consolePane.Update(m, a)
 			return a, cmd
-		case keyMatches(m, keys.Help):
+		case keyMatches(m, keys.Help) && (m.String() != "?" || !a.input.Focused()):
+			// f1 always toggles help; "?" only when the chat input does not
+			// have the keyboard — a focused input must receive the character.
 			a.toggleHelp()
 			return a, nil
 		case keyMatches(m, keys.Cancel):
@@ -253,10 +255,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.pane == paneCard && a.cardPane.Update(msg) {
 			return a, tea.Batch(cmds...)
 		}
-		// The wire pane consumes scroll keys plus "c" (clear); typing still
-		// reaches the input box.
-		if a.pane == paneWire && a.wirePane.Update(msg) {
-			return a, tea.Batch(cmds...)
+		// The wire pane consumes the scroll keys; everything else still
+		// reaches the input box. Plain "c" would swallow a typed character
+		// (the chat input keeps focus behind the pane), so clearing lives on
+		// ctrl+l here and "c" is never forwarded to the pane.
+		if a.pane == paneWire {
+			if keyMatches(m, keys.WireClear) {
+				a.wirePane.Clear()
+				return a, tea.Batch(cmds...)
+			}
+			if m.String() != "c" && a.wirePane.Update(msg) {
+				return a, tea.Batch(cmds...)
+			}
 		}
 
 	case spinner.TickMsg:
@@ -363,9 +373,13 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 
 	if m.session != nil {
 		if a.session != nil {
-			// Tear the previous session's push webhook down before
-			// replacing it (it delivered straight into the old session).
-			a.session.StopPush()
+			// Fully retire the previous session (pumps, push webhook,
+			// listener): StopPush alone left its goroutines running, and a
+			// still-listening bridge would starve the new session's
+			// armListener of the latch.
+			old := a.session
+			a.listening = false
+			go old.Shutdown()
 		}
 		a.session = m.session
 		a.lastTaskID = ""
@@ -428,6 +442,10 @@ func (a *App) runCommand(line string) tea.Cmd {
 			s := a.session
 			go s.Shutdown()
 		}
+		// Release the listener latch: the bridge listener selects on the
+		// session's Done channel and exits on its own, but until it does,
+		// a new session's armListener must not be blocked by it.
+		a.listening = false
 		a.session = nil
 		a.conn = nil
 		a.connURL = ""

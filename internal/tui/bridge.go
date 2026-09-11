@@ -8,10 +8,11 @@ import (
 
 // Bubble Tea bridge: a single blocking Cmd reads the session's event
 // channel and delivers one event per message; App.Update re-arms it after
-// processing. Exactly one listener is outstanding at any time (armed on
-// session creation and re-armed only in the agentEventMsg handler), and
-// the channel is never closed — shutdown is signaled by canceling the
-// session, after which the listener is no longer re-armed.
+// processing. At most one listener is outstanding per session (armed on
+// session creation and re-armed only in the agentEventMsg handler). The
+// channel is never closed; shutdown is signaled by the session's Done
+// channel, which the listener selects on so a torn-down session cannot
+// leave it blocked forever (and cannot starve the next session's listener).
 
 // agentEventMsg wraps one agent.Event as a tea.Msg.
 type agentEventMsg struct{ ev agent.Event }
@@ -20,14 +21,20 @@ type agentEventMsg struct{ ev agent.Event }
 // should not be); the app stops listening rather than spinning.
 type agentEventsClosedMsg struct{}
 
-// listenEvents returns a Cmd that blocks for the next session event.
-func listenEvents(ch <-chan agent.Event) tea.Cmd {
+// listenEvents returns a Cmd that blocks for the next session event or
+// for session teardown, whichever comes first. On teardown it returns nil
+// (bubbletea drops nil messages), so the listener is simply not re-armed.
+func listenEvents(done <-chan struct{}, ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return agentEventsClosedMsg{}
+		select {
+		case <-done:
+			return nil
+		case ev, ok := <-ch:
+			if !ok {
+				return agentEventsClosedMsg{}
+			}
+			return agentEventMsg{ev: ev}
 		}
-		return agentEventMsg{ev: ev}
 	}
 }
 
@@ -38,5 +45,5 @@ func (a *App) armListener() tea.Cmd {
 		return nil
 	}
 	a.listening = true
-	return listenEvents(a.session.Events())
+	return listenEvents(a.session.Done(), a.session.Events())
 }

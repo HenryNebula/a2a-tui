@@ -104,11 +104,11 @@ Global:
 | `ctrl+t` | transcript pane |
 | `ctrl+g` | agent-card pane (scroll: `up`/`down`, `pgup`/`pgdown`, `home`/`end`) |
 | `ctrl+k` | tasks dashboard (cursor: `up`/`down`; `enter` detail, `c` cancel, `s` subscribe, `r` refresh) |
-| `ctrl+w` | wire pane: raw framed request/response traffic (`c` clears) |
+| `ctrl+w` | wire pane: raw framed request/response traffic (`ctrl+l` clears) |
 | `ctrl+e` | raw JSON-RPC console |
 | `ctrl+f` | focus the most recent A2UI surface |
-| `?` | help overlay (full key + command reference) |
-| `ctrl+c`, `ctrl+d` | quit |
+| `f1` | help overlay (full key + command reference) |
+| `ctrl+c` | quit |
 
 Raw JSON-RPC console pane:
 

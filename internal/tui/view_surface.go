@@ -285,7 +285,10 @@ func (p *SurfacePane) dispatch(out widget.ActionOut) tea.Cmd {
 	ctx := surf.EvalContextFor(funcs)
 	res, err := a2ui.Dynamic{Kind: a2ui.KindCall, Call: call}.Evaluate(ctx)
 	switch {
-	case errors.Is(err, a2ui.ErrGated), call.Name == "openUrl":
+	case errors.Is(err, a2ui.ErrGated):
+		// Only a genuinely gated call (openUrl on an http(s) URL) may reach
+		// the y/n prompt; any other error — e.g. openUrl refusing a
+		// non-http(s) scheme — is a validation failure and renders as such.
 		url := callArgString(call, "url", ctx)
 		if url == "" {
 			p.status = "openUrl requested without a usable URL — refused"

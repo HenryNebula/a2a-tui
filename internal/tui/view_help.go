@@ -60,7 +60,8 @@ func globalKeyRows() []helpKeyRow {
 var paneKeyRows = []helpKeyRow{
 	{keys: "up/down", desc: "tasks: select · wire: scroll"},
 	{keys: "enter", desc: "tasks: task detail"},
-	{keys: "c", desc: "tasks: cancel · wire: clear"},
+	{keys: "c", desc: "tasks: cancel"},
+	{keys: "ctrl+l", desc: "wire: clear"},
 	{keys: "s / r", desc: "tasks: subscribe / refresh"},
 	{keys: "tab", desc: "surface: cycle fields · console: cycle methods"},
 	{keys: "ctrl+enter", desc: "console: send (alt+enter works everywhere)"},
@@ -116,7 +117,7 @@ func (p *HelpPane) View(width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	footer := styleDim.Render(cell("? / esc close · up/down scroll", width))
+	footer := styleDim.Render(cell("f1 / ? / esc close · up/down scroll", width))
 	if p.cache == "" || p.cacheW != width {
 		p.cacheW = width
 		p.cache = p.render(width)
@@ -217,7 +218,7 @@ func (a *App) toggleHelp() {
 // the overlay and continues with normal key routing.
 func (a *App) handleHelpKey(m tea.KeyMsg) bool {
 	switch m.String() {
-	case "?", "esc":
+	case "?", "esc", "f1":
 		a.helpOpen = false
 		return true
 	}

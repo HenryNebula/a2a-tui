@@ -18,11 +18,16 @@ type keyMap struct {
 	PaneTasks      key.Binding
 	PaneWire       key.Binding
 	PaneConsole    key.Binding
+	WireClear      key.Binding
 }
 
 var keys = keyMap{
-	Quit:           key.NewBinding(key.WithKeys("ctrl+c", "ctrl+d"), key.WithHelp("ctrl+c", "quit")),
-	Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	// ctrl+d is left to the focused textarea (its forward-delete binding);
+	// ctrl+c stays the quit chord.
+	Quit: key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+	// f1 always toggles help; "?" only when no text input has the keyboard
+	// (typing "?" must insert it into the chat box).
+	Help:           key.NewBinding(key.WithKeys("f1", "?"), key.WithHelp("f1", "help")),
 	Send:           key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 	Cancel:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel stream")),
 	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "transcript")),
@@ -31,6 +36,7 @@ var keys = keyMap{
 	PaneTasks:      key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "tasks")),
 	PaneWire:       key.NewBinding(key.WithKeys("ctrl+w"), key.WithHelp("ctrl+w", "wire")),
 	PaneConsole:    key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "console")),
+	WireClear:      key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "wire: clear")),
 }
 
 // keyMatches reports whether msg presses the binding.

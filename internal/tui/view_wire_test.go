@@ -94,15 +94,15 @@ func TestWirePaneTruncatesBigBodies(t *testing.T) {
 	}
 }
 
-func TestWirePaneClearKey(t *testing.T) {
+func TestWirePaneClear(t *testing.T) {
 	p := NewWirePane()
 	p.Sync(fakeEntries())
 	if view := stripStyle(p.View(90, 20)); !strings.Contains(view, "message/send") {
 		t.Fatalf("frame missing before clear:\n%s", view)
 	}
-	if !p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}) {
-		t.Fatal("c should be consumed by the wire pane")
-	}
+	// The app routes clear on ctrl+l (plain "c" must stay a typed
+	// character), which lands here.
+	p.Clear()
 	view := stripStyle(p.View(90, 20))
 	if strings.Contains(view, "message/send") {
 		t.Fatalf("frame survived clear:\n%s", view)
@@ -155,12 +155,20 @@ func TestAppWirePaneSwitchAndCommand(t *testing.T) {
 		t.Fatal("/wire should also enable capture")
 	}
 
-	// While the wire pane is focused, "c" clears instead of typing.
+	// While the wire pane is focused, typing still reaches the input box:
+	// plain "c" is a character, only ctrl+l clears the log.
 	a.wirePane.Sync(fakeEntries())
 	a.input.Reset()
 	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	if a.input.Value() != "" {
-		t.Fatalf("c leaked into the input: %q", a.input.Value())
+	if a.input.Value() != "c" {
+		t.Fatalf("typed c did not reach the input: %q", a.input.Value())
+	}
+	if view := stripStyle(a.wirePane.View(90, 20)); !strings.Contains(view, "message/send") {
+		t.Fatalf("typing c must not clear the wire log:\n%s", view)
+	}
+	update(t, a, tea.KeyMsg{Type: tea.KeyCtrlL})
+	if view := stripStyle(a.wirePane.View(90, 20)); strings.Contains(view, "message/send") {
+		t.Fatalf("ctrl+l did not clear the wire log:\n%s", view)
 	}
 
 	// /wire off disables capture but keeps the pane readable.

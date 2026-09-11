@@ -66,9 +66,10 @@ func (p *WirePane) Clear() {
 	p.clearedAt = time.Now()
 }
 
-// Update consumes the pane's keys: scroll bindings plus "c" to clear. It
-// reports whether the key was consumed; anything else falls through to the
-// input box.
+// Update consumes the pane's keys: scroll bindings. It reports whether the
+// key was consumed; anything else (including typing) falls through to the
+// input box. Clearing is bound to ctrl+l at the app level (WireClear),
+// which calls Clear directly.
 func (p *WirePane) Update(msg tea.Msg) bool {
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -87,8 +88,6 @@ func (p *WirePane) Update(msg tea.Msg) bool {
 		p.viewport.GotoTop()
 	case "end":
 		p.viewport.GotoBottom()
-	case "c":
-		p.Clear()
 	default:
 		return false
 	}
@@ -101,7 +100,7 @@ func (p *WirePane) View(width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	footer := styleDim.Render(cell("c clear · up/down scroll · frames: "+strconv.Itoa(len(p.visible())), width))
+	footer := styleDim.Render(cell("ctrl+l clear · up/down scroll · frames: "+strconv.Itoa(len(p.visible())), width))
 	bodyHeight := max(1, height-1)
 
 	key := p.cacheKeyFor(width)
