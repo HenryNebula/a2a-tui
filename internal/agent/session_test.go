@@ -236,6 +236,52 @@ func TestSendContinuationAndMetadata(t *testing.T) {
 	}
 }
 
+// TestSendRawSendsPrebuiltMessage covers the A2UI action path: a
+// caller-built message (data part + own context) is sent as-is with the
+// engine metadata merged on top; explicit options still override.
+func TestSendRawSendsPrebuiltMessage(t *testing.T) {
+	conn := &fakeConn{}
+	s := NewSession(conn)
+	defer s.Shutdown()
+
+	part := a2a.NewDataPart(map[string]any{"version": "v1.0", "action": map[string]any{"name": "submit"}})
+	part.Metadata = map[string]any{"mimeType": "application/a2ui+json"}
+	msg := a2a.NewMessage(a2a.MessageRoleUser, part)
+	msg.ContextID = "c-a2ui"
+	s.SendRaw(context.Background(), msg, SendOptions{})
+	drain(s, func(ev Event) bool {
+		d, ok := ev.(StreamDoneEvent)
+		return ok && d.Op == "send"
+	}, 2*time.Second)
+
+	req := conn.lastSend()
+	if req.Message.Role != a2a.MessageRoleUser || len(req.Message.Parts) != 1 {
+		t.Fatalf("prebuilt message altered: %+v", req.Message)
+	}
+	if mt, _ := req.Message.Parts[0].Metadata["mimeType"].(string); mt != "application/a2ui+json" {
+		t.Fatalf("part metadata lost: %v", req.Message.Parts[0].Metadata)
+	}
+	if req.Message.ContextID != "c-a2ui" {
+		t.Fatalf("message context id lost: %q", req.Message.ContextID)
+	}
+	if req.Message.Metadata["a2uiRendererCapabilities"] == nil {
+		t.Fatalf("capabilities metadata not merged: %+v", req.Message.Metadata)
+	}
+
+	// Options override the message's own continuation IDs.
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {}
+	}
+	msg2 := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("again"))
+	msg2.ContextID = "c-original"
+	s.SendRawStreaming(context.Background(), msg2, SendOptions{ContextID: "c-override"})
+	drain(s, isStreamDone, 2*time.Second)
+	req2 := conn.lastSend()
+	if req2.Message.ContextID != "c-override" {
+		t.Fatalf("stream context id = %q, want override", req2.Message.ContextID)
+	}
+}
+
 func TestStreamBackpressureCompacts(t *testing.T) {
 	conn := &fakeConn{}
 	info := a2a.TaskInfo{TaskID: "t-flood", ContextID: "c"}

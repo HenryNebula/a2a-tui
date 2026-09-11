@@ -352,7 +352,7 @@ func (b *SurfaceSnapshotBlock) Render(width int) string {
 	if width <= 0 {
 		width = 80
 	}
-	head := styleDim.Render("◇ a2ui surface " + b.SurfaceID)
+	head := styleDim.Render("◇ a2ui surface " + b.SurfaceID + " · [ctrl+f focus]")
 	if b.deleted || b.surf == nil {
 		return clipLine(head+styleDim.Render(" (deleted)"), width)
 	}

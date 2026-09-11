@@ -24,6 +24,8 @@ var (
 	styleCardHeader = lipgloss.NewStyle().Bold(true).Foreground(colorDim) // table headers
 
 	styleStatus = lipgloss.NewStyle().Foreground(colorAccent)
+
+	styleSurfacePrompt = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
 // styleState returns the style for the connection-state pill in the header.

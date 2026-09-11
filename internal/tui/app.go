@@ -37,6 +37,7 @@ type paneKind int
 const (
 	paneTranscript paneKind = iota
 	paneCard
+	paneSurface
 )
 
 // App is the root application model.
@@ -66,21 +67,23 @@ type App struct {
 	connURL string // concrete URL of the current/last connection
 
 	// Chat state.
-	session     *agent.Session
-	transcript  *chat.Transcript
-	pending     *pendingInput // input-required task awaiting a reply
-	lastTaskID  string
-	inflight    int
-	statusText  string
-	streamMode  bool
-	wireLog     *wirelog.Logger
-	spinner     spinner.Model
-	listening   bool
-	pane        paneKind
-	transcriptV viewport.Model
-	cardPane    CardPane
-	input       textarea.Model
-	help        help.Model
+	session       *agent.Session
+	transcript    *chat.Transcript
+	pending       *pendingInput // input-required task awaiting a reply
+	lastTaskID    string
+	lastContextID string // most recent agent context (taskless a2ui turns)
+	inflight      int
+	statusText    string
+	streamMode    bool
+	wireLog       *wirelog.Logger
+	spinner       spinner.Model
+	listening     bool
+	pane          paneKind
+	transcriptV   viewport.Model
+	cardPane      CardPane
+	surfacePane   SurfacePane
+	input         textarea.Model
+	help          help.Model
 
 	httpClient *http.Client
 	connecting bool
@@ -144,14 +147,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case keyMatches(m, keys.Quit):
 			return a, tea.Quit
-		case keyMatches(m, keys.Help):
-			a.showHelp()
 		case keyMatches(m, keys.PaneTranscript):
 			a.pane = paneTranscript
 			return a, nil
 		case keyMatches(m, keys.PaneCard):
 			a.pane = paneCard
 			return a, nil
+		case keyMatches(m, keys.PaneSurface):
+			a.openSurface("")
+			return a, nil
+		case a.pane == paneSurface:
+			// The surface pane owns the keyboard (except the pane-switch
+			// and quit globals above). Esc leaves the pane — unless an
+			// openUrl prompt is active, where it cancels the prompt.
+			if m.String() == "esc" && !a.surfacePane.PromptActive() {
+				a.pane = paneTranscript
+				return a, nil
+			}
+			cmd, _ := a.surfacePane.Update(m)
+			return a, cmd
+		case keyMatches(m, keys.Help):
+			a.showHelp()
 		case keyMatches(m, keys.Cancel):
 			return a, a.cancelActive()
 		case m.String() == "enter":
@@ -254,7 +270,13 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 	if m.session != nil {
 		a.session = m.session
 		a.lastTaskID = ""
+		a.lastContextID = ""
 		a.pending = nil
+		// The new session owns a fresh A2UI engine; drop the old pane.
+		a.surfacePane.Close()
+		if a.pane == paneSurface {
+			a.pane = paneTranscript
+		}
 	}
 	a.refreshTranscript()
 	return a.armListener()
@@ -306,8 +328,13 @@ func (a *App) runCommand(line string) tea.Cmd {
 		a.conn = nil
 		a.connURL = ""
 		a.agentName, a.protoVer, a.connState = "", "", ""
-		a.pending, a.lastTaskID, a.inflight, a.statusText = nil, "", 0, ""
+		a.pending, a.lastTaskID, a.lastContextID = nil, "", ""
+		a.inflight, a.statusText = 0, ""
 		a.cardPane.SetCard(nil)
+		a.surfacePane.Close()
+		if a.pane == paneSurface {
+			a.pane = paneTranscript
+		}
 		a.addStatus("disconnected")
 		a.refreshTranscript()
 		return nil
@@ -327,6 +354,9 @@ func (a *App) runCommand(line string) tea.Cmd {
 			a.addStatus("no card yet — /connect <url-or-name> first")
 			a.refreshTranscript()
 		}
+
+	case "/surface":
+		a.cmdSurface(args)
 
 	case "/chat":
 		a.pane = paneTranscript
@@ -360,10 +390,11 @@ func (a *App) runCommand(line string) tea.Cmd {
 func (a *App) showHelp() {
 	for _, line := range []string{
 		"commands: /help /connect <url-or-name> /disconnect /agents /agent save|remove|default <name>",
-		"          /card /chat /clear /quit",
+		"          /card /surface [id] /chat /clear /quit",
 		"chat:     /stream on|off · /task <id> · /cancel <id> · /history <id> [n]",
 		"debug:    /wire on|off (capture raw frames; pane in M4)",
 		"keys:     enter send · esc cancel active stream · ctrl+t transcript · ctrl+g card · ? help",
+		"a2ui:     ctrl+f focus the latest surface · tab cycle · enter activate · esc back",
 	} {
 		a.addStatus(line)
 	}
@@ -542,6 +573,9 @@ func (a *App) View() string {
 	if a.pane == paneCard {
 		body = a.cardPane.View(a.width-2, a.transcriptV.Height)
 	}
+	if a.pane == paneSurface {
+		body = a.surfacePane.View(a.width-2, a.transcriptV.Height)
+	}
 	status := a.statusLineView()
 	input := styleInputBox.Render(a.input.View())
 	footer := a.helpView()
@@ -596,6 +630,6 @@ func (a *App) statusLineView() string {
 
 func (a *App) helpView() string {
 	return styleHelp.Render(a.help.ShortHelpView([]key.Binding{
-		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.Help, keys.Quit,
+		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.PaneSurface, keys.Help, keys.Quit,
 	}))
 }

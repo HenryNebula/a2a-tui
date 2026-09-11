@@ -476,10 +476,11 @@ func TestConnectBuildsSessionAndSends(t *testing.T) {
 	a.session.Shutdown()
 }
 
-func TestConnectRejectsV03WithFriendlyError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestConnectV03BuildsSession(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "agent.json") {
-			_, _ = io.WriteString(w, `{"name":"Old","url":"http://x","protocolVersion":"0.3.0","capabilities":{}}`)
+			_, _ = io.WriteString(w, `{"name":"Old","url":"`+srv.URL+`","protocolVersion":"0.3.0","capabilities":{"streaming":false}}`)
 			return
 		}
 		http.NotFound(w, r)
@@ -493,17 +494,20 @@ func TestConnectRejectsV03WithFriendlyError(t *testing.T) {
 
 	msg := a.startConnect(srv.URL)()
 	res, ok := msg.(connectResultMsg)
-	if !ok || res.err == nil {
-		t.Fatalf("expected failure, got %#v", msg)
+	if !ok || res.err != nil || res.session == nil {
+		t.Fatalf("expected successful 0.3 connect, got %#v", msg)
 	}
 	update(t, a, msg)
-	if a.session != nil || a.connState != "error" {
+	if a.session == nil || a.connState != "connected" {
 		t.Fatalf("state = %q session=%v", a.connState, a.session != nil)
 	}
-	out := rendered(a)
-	if !strings.Contains(out, "not implemented yet") {
-		t.Fatalf("compat note missing:\n%s", out)
+	if a.streamMode {
+		t.Fatal("stream mode should default off for a non-streaming 0.3 card")
 	}
+	if out := rendered(a); !strings.Contains(out, "0.3") {
+		t.Fatalf("wire version not surfaced:\n%s", out)
+	}
+	a.session.Shutdown()
 }
 
 func TestSanitizedAgentTextReachesTranscript(t *testing.T) {

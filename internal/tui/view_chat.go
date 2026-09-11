@@ -65,6 +65,9 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 
 	case agent.TaskUpdateEvent:
 		a.lastTaskID = e.TaskID
+		if e.ContextID != "" {
+			a.lastContextID = e.ContextID
+		}
 		block := chat.NewTaskStateBlock(e.TaskID, e.State, e.StatusText)
 		a.transcript.ReplaceByID(block.ID(), block)
 		switch {
@@ -82,6 +85,10 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 
 	case agent.AgentMessageEvent:
 		if a.session != nil {
+			// Taskless a2ui turns continue via the reply's context.
+			if e.Msg.ContextID != "" {
+				a.lastContextID = e.Msg.ContextID
+			}
 			a.transcript.Append(chat.SplitMessage(e.Msg, a.session.Engine())...)
 		}
 
@@ -117,6 +124,7 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 		a.addError(e.Op, e.Err)
 	}
 
+	a.syncSurfacePane()
 	a.refreshTranscript()
 	cmds = append(cmds, a.armListener(), a.spinnerCmd())
 	return tea.Batch(cmds...)
@@ -193,6 +201,7 @@ func (a *App) handleTaskResult(m taskResultMsg) {
 	case "refresh":
 		a.setStatus("task " + m.id + " refreshed")
 	}
+	a.syncSurfacePane()
 	a.refreshTranscript()
 }
 

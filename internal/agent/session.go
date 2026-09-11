@@ -142,8 +142,17 @@ func (s *Session) Events() <-chan Event { return s.events }
 // Send fires a blocking SendMessage in the background and publishes the
 // result as events, ending with StreamDoneEvent{Op: "send"}.
 func (s *Session) Send(ctx context.Context, text string, opts SendOptions) {
-	req := s.buildRequest(text, opts)
-	key := "send:" + req.Message.ID
+	s.SendRaw(ctx, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text)), opts)
+}
+
+// SendRaw is Send with a caller-built message (e.g. an A2UI action riding
+// in a data part). The message's role, parts and continuation IDs are used
+// as-is; SendOptions.TaskID/ContextID override when set, and the A2UI
+// renderer capabilities (+ data-model metadata) are merged over the
+// message's own metadata.
+func (s *Session) SendRaw(ctx context.Context, msg *a2a.Message, opts SendOptions) {
+	req := s.requestFor(msg, opts)
+	key := "send:" + msg.ID
 	opCtx, cancel := s.register(ctx, key)
 	s.wg.Add(1)
 	go func() {
@@ -177,8 +186,13 @@ func (s *Session) Send(ctx context.Context, text string, opts SendOptions) {
 // StreamDoneEvent{Op: "stream"}. Backpressured updates are dropped and
 // reported via StreamCompactedEvent.
 func (s *Session) SendStreaming(ctx context.Context, text string, opts SendOptions) {
-	req := s.buildRequest(text, opts)
-	key := "stream:" + req.Message.ID
+	s.SendRawStreaming(ctx, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text)), opts)
+}
+
+// SendRawStreaming is SendRaw over the streaming transport.
+func (s *Session) SendRawStreaming(ctx context.Context, msg *a2a.Message, opts SendOptions) {
+	req := s.requestFor(msg, opts)
+	key := "stream:" + msg.ID
 	opCtx, cancel := s.register(ctx, key)
 	seq := s.conn.SendStreamingMessage(opCtx, req)
 	s.wg.Add(1)
@@ -335,11 +349,10 @@ func (s *Session) taskEvents(t *a2a.Task, op string) []Event {
 	return out
 }
 
-// buildRequest assembles the SendMessageRequest for a chat turn:
-// user role, one text part, continuation IDs, and metadata merged from
-// the A2UI engine capabilities (plus any sendDataModel surfaces).
-func (s *Session) buildRequest(text string, opts SendOptions) *a2a.SendMessageRequest {
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
+// requestFor applies continuation IDs and config to a prebuilt message and
+// merges the A2UI engine capabilities metadata (plus any sendDataModel
+// surfaces and the caller's extra metadata) over the message's own.
+func (s *Session) requestFor(msg *a2a.Message, opts SendOptions) *a2a.SendMessageRequest {
 	if opts.TaskID != "" {
 		msg.TaskID = a2a.TaskID(opts.TaskID)
 	}
@@ -359,9 +372,9 @@ func (s *Session) buildRequest(text string, opts SendOptions) *a2a.SendMessageRe
 func (s *Session) outboundMetadata(extra map[string]any) map[string]any {
 	meta := s.eng.OutboundCapabilities()
 	if dm := s.eng.DataModelMetadata(); dm != nil {
-		for k, v := range dm {
-			meta[k] = v
-		}
+		// The attachment nests under its own key (the engine returns the
+		// {version, surfaces} payload), matching the schema agents read.
+		meta["a2uiRendererDataModel"] = dm
 	}
 	for k, v := range extra {
 		meta[k] = v
