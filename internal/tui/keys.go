@@ -11,6 +11,7 @@ type keyMap struct {
 	Quit           key.Binding
 	Help           key.Binding
 	Send           key.Binding
+	Cancel         key.Binding
 	PaneTranscript key.Binding
 	PaneCard       key.Binding
 }
@@ -19,6 +20,7 @@ var keys = keyMap{
 	Quit:           key.NewBinding(key.WithKeys("ctrl+c", "ctrl+d"), key.WithHelp("ctrl+c", "quit")),
 	Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	Send:           key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+	Cancel:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel stream")),
 	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "transcript")),
 	PaneCard:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "card")),
 }

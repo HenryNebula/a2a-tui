@@ -1,36 +1,13 @@
 package tui
 
 import (
-	"fmt"
+	"github.com/a2aproject/a2a-go/v2/a2a"
 
 	"github.com/HenryNebula/a2a-tui/internal/agent"
 )
 
-// Messages produced by async work (Cmds, and later the agent session's
-// event channel) and consumed by App.Update.
-
-// statusMsg is an informational message shown in the transcript.
-type statusMsg string
-
-// errMsg surfaces an error to the user.
-type errMsg struct{ err error }
-
-func (e errMsg) Error() string { return e.err.Error() }
-
-// connectStatusMsg reports connection lifecycle changes.
-type connectStatusMsg struct {
-	agentName string
-	protoVer  string
-	state     string // "connecting", "connected", "error"
-	err       error
-}
-
-func (m connectStatusMsg) String() string {
-	if m.err != nil {
-		return fmt.Sprintf("%s: %v", m.state, m.err)
-	}
-	return m.state
-}
+// Messages produced by async work (Cmds and the session event bridge)
+// and consumed by App.Update.
 
 // connectResultMsg carries the outcome of an async agent-card resolution
 // started by /connect or the --agent flag.
@@ -42,6 +19,22 @@ type connectResultMsg struct {
 	url string
 	// resolved is set on success.
 	resolved *agent.Resolved
+	// session is the live chat session, set on success.
+	session *agent.Session
+	// err is set on failure.
+	err error
+}
+
+// taskResultMsg carries the outcome of a one-shot task RPC (GetTask,
+// CancelTask, compaction refresh).
+type taskResultMsg struct {
+	// op names the operation for status lines ("task", "cancel",
+	// "history", "refresh").
+	op string
+	// id is the task ID the op targeted.
+	id string
+	// task is set on success.
+	task *a2a.Task
 	// err is set on failure.
 	err error
 }

@@ -14,13 +14,16 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/HenryNebula/a2a-tui/internal/agent"
+	"github.com/HenryNebula/a2a-tui/internal/chat"
 	"github.com/HenryNebula/a2a-tui/internal/config"
+	"github.com/HenryNebula/a2a-tui/internal/wirelog"
 )
 
 const inputRows = 3
@@ -57,16 +60,27 @@ type App struct {
 	protoVer  string
 	connState string // "", "connecting", "connected", "error"
 
-	// conn holds the current connection. M3 replaces it with a full
-	// agent.Session.
+	// conn holds the current resolution (card etc.); session owns the
+	// live connection once /connect succeeds.
 	conn    *agent.Resolved
 	connURL string // concrete URL of the current/last connection
 
-	pane       paneKind
-	transcript viewport.Model
-	cardPane   CardPane
-	input      textarea.Model
-	help       help.Model
+	// Chat state.
+	session     *agent.Session
+	transcript  *chat.Transcript
+	pending     *pendingInput // input-required task awaiting a reply
+	lastTaskID  string
+	inflight    int
+	statusText  string
+	streamMode  bool
+	wireLog     *wirelog.Logger
+	spinner     spinner.Model
+	listening   bool
+	pane        paneKind
+	transcriptV viewport.Model
+	cardPane    CardPane
+	input       textarea.Model
+	help        help.Model
 
 	httpClient *http.Client
 	connecting bool
@@ -78,7 +92,9 @@ type App struct {
 // may be nil.
 func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 	vp := viewport.New(0, 0)
-	vp.SetContent(welcomeText())
+	tr := chat.NewTranscript()
+	tr.Append(chat.NewStatusBlock("a2a-tui — a terminal client for A2A agents."))
+	tr.Append(chat.NewStatusBlock("Connect with /connect <url-or-name>, view the card with /card."))
 
 	ta := textarea.New()
 	ta.Placeholder = "Message the agent…  (/help for commands)"
@@ -87,22 +103,22 @@ func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 	ta.SetHeight(inputRows)
 	ta.Focus()
 
-	return &App{
-		agentRef:   agentRef,
-		protoMode:  mode,
-		store:      store,
-		connState:  "",
-		transcript: vp,
-		cardPane:   NewCardPane(),
-		input:      ta,
-		help:       help.New(),
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-	}
-}
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 
-func welcomeText() string {
-	return styleDim.Render("a2a-tui — a terminal client for A2A agents.") + "\n" +
-		styleDim.Render("Connect with /connect <url-or-name>, view the card with /card.")
+	return &App{
+		agentRef:    agentRef,
+		protoMode:   mode,
+		store:       store,
+		connState:   "",
+		transcript:  tr,
+		wireLog:     wirelog.New(wirelog.DefaultRingSize),
+		spinner:     sp,
+		transcriptV: vp,
+		cardPane:    NewCardPane(),
+		input:       ta,
+		help:        help.New(),
+		httpClient:  &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 // Init implements tea.Model.
@@ -122,19 +138,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width, a.height = m.Width, m.Height
 		a.layout()
 		a.ready = true
+		a.refreshTranscript()
 
 	case tea.KeyMsg:
 		switch {
 		case keyMatches(m, keys.Quit):
 			return a, tea.Quit
 		case keyMatches(m, keys.Help):
-			a.appendTranscript(styleDim.Render("keys: ctrl+c quit · enter send · alt+enter/ctrl+j newline · ctrl+t transcript · ctrl+g card · ? help"))
+			a.showHelp()
 		case keyMatches(m, keys.PaneTranscript):
 			a.pane = paneTranscript
 			return a, nil
 		case keyMatches(m, keys.PaneCard):
 			a.pane = paneCard
 			return a, nil
+		case keyMatches(m, keys.Cancel):
+			return a, a.cancelActive()
 		case m.String() == "enter":
 			cmds = append(cmds, a.submit())
 			return a, tea.Batch(cmds...)
@@ -145,8 +164,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 
+	case spinner.TickMsg:
+		if a.inflight > 0 {
+			var cmd tea.Cmd
+			a.spinner, cmd = a.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+
 	case connectResultMsg:
-		a.handleConnectResult(m)
+		cmd := a.handleConnectResult(m)
+		return a, cmd
+
+	case agentEventMsg:
+		a.listening = false
+		return a, a.handleAgentEvent(m.ev)
+
+	case agentEventsClosedMsg:
+		a.listening = false
+		return a, nil
+
+	case taskResultMsg:
+		a.handleTaskResult(m)
 		return a, nil
 	}
 
@@ -154,26 +193,51 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	a.input, cmd = a.input.Update(msg)
 	cmds = append(cmds, cmd)
 
-	a.transcript, cmd = a.transcript.Update(msg)
+	a.transcriptV, cmd = a.transcriptV.Update(msg)
 	cmds = append(cmds, cmd)
 	return a, tea.Batch(cmds...)
 }
 
+// cancelActive cancels in-flight sends/streams (Esc).
+func (a *App) cancelActive() tea.Cmd {
+	if a.session == nil || a.inflight == 0 {
+		return nil
+	}
+	if a.session.CancelActive() > 0 {
+		a.setStatus("cancelling…")
+	}
+	return nil
+}
+
+// Shutdown tears down the session (called by main after the program
+// exits). Safe to call on a disconnected app.
+func (a *App) Shutdown() {
+	if a.session != nil {
+		a.session.Shutdown()
+		a.session = nil
+	}
+}
+
 // handleConnectResult applies a finished resolution to header, transcript
-// and card pane state.
-func (a *App) handleConnectResult(m connectResultMsg) {
+// and card pane state, then arms the session listener.
+func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 	a.connecting = false
+	if m.resolved != nil {
+		a.cardPane.SetCard(m.resolved)
+	}
 	if m.err != nil {
 		a.connState = "error"
-		a.appendTranscript(styleError.Render("connect failed: " + m.err.Error()))
-		return
+		a.conn, a.connURL = nil, ""
+		a.addError("connect", m.err)
+		a.refreshTranscript()
+		return nil
 	}
 	a.conn = m.resolved
 	a.connURL = m.url
 	a.agentName = m.resolved.Summary.Name
 	a.protoVer = m.resolved.Wire
 	a.connState = "connected"
-	a.cardPane.SetCard(m.resolved)
+	a.streamMode = m.resolved.Summary.Capabilities.Streaming
 
 	stream := "✓"
 	if !m.resolved.Summary.Capabilities.Streaming {
@@ -183,10 +247,17 @@ func (a *App) handleConnectResult(m connectResultMsg) {
 	if !m.resolved.Summary.Capabilities.PushNotifications {
 		push = "✗"
 	}
-	a.appendTranscript(styleDim.Render(
-		"connected to " + a.agentName + ": A2A " + m.resolved.Wire +
-			" · streaming " + stream + " · push " + push +
-			" · endpoint " + m.resolved.BaseURL))
+	a.addStatus("connected to " + a.agentName + ": A2A " + m.resolved.Wire +
+		" · streaming " + stream + " · push " + push +
+		" · endpoint " + m.resolved.BaseURL)
+
+	if m.session != nil {
+		a.session = m.session
+		a.lastTaskID = ""
+		a.pending = nil
+	}
+	a.refreshTranscript()
+	return a.armListener()
 }
 
 // submit handles Enter in the input box: slash commands, else chat send.
@@ -199,9 +270,7 @@ func (a *App) submit() tea.Cmd {
 	if strings.HasPrefix(text, "/") {
 		return a.runCommand(text)
 	}
-	a.appendTranscript(styleUser.Render("┃ you: ") + text)
-	a.appendTranscript(styleDim.Render("  (not connected — chat lands with the next milestone)"))
-	return nil
+	return a.sendText(text)
 }
 
 // runCommand dispatches a slash command. Extended per milestone.
@@ -210,65 +279,121 @@ func (a *App) runCommand(line string) tea.Cmd {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "/help":
-		a.appendTranscript(styleDim.Render(
-			"commands: /help /connect <url-or-name> /disconnect /agents /agent save|remove|default <name> /card /chat /quit"))
+		a.showHelp()
 
 	case "/quit", "/exit":
 		return tea.Quit
 
 	case "/connect":
 		if len(args) != 1 {
-			a.appendTranscript(styleError.Render("usage: /connect <agent-url-or-name>"))
+			a.addStatus("usage: /connect <agent-url-or-name>")
+			a.refreshTranscript()
 			return nil
 		}
 		if a.connecting {
-			a.appendTranscript(styleError.Render("already connecting — wait for the current attempt"))
+			a.addStatus("already connecting — wait for the current attempt")
+			a.refreshTranscript()
 			return nil
 		}
 		return a.startConnect(args[0])
 
 	case "/disconnect":
+		if a.session != nil {
+			s := a.session
+			go s.Shutdown()
+		}
+		a.session = nil
 		a.conn = nil
 		a.connURL = ""
 		a.agentName, a.protoVer, a.connState = "", "", ""
+		a.pending, a.lastTaskID, a.inflight, a.statusText = nil, "", 0, ""
 		a.cardPane.SetCard(nil)
-		a.appendTranscript(styleDim.Render("disconnected"))
+		a.addStatus("disconnected")
+		a.refreshTranscript()
+		return nil
 
 	case "/agents":
 		a.listAgents()
+		a.refreshTranscript()
 
 	case "/agent":
-		return a.agentCommand(args)
+		cmd := a.agentCommand(args)
+		a.refreshTranscript()
+		return cmd
 
 	case "/card":
 		a.pane = paneCard
 		if a.conn == nil {
-			a.appendTranscript(styleDim.Render("no card yet — /connect <url-or-name> first"))
+			a.addStatus("no card yet — /connect <url-or-name> first")
+			a.refreshTranscript()
 		}
 
 	case "/chat":
 		a.pane = paneTranscript
 
+	case "/stream":
+		return a.cmdStream(args)
+
+	case "/wire":
+		return a.cmdWire(args)
+
+	case "/task":
+		return a.cmdTask(args)
+
+	case "/cancel":
+		return a.cmdCancel(args)
+
+	case "/history":
+		return a.cmdHistory(args)
+
+	case "/clear":
+		return a.cmdClear()
+
 	default:
-		a.appendTranscript(styleError.Render("unknown command: " + cmd))
+		a.addStatus("unknown command: " + cmd)
+		a.refreshTranscript()
 	}
 	return nil
 }
 
+// showHelp prints the command reference.
+func (a *App) showHelp() {
+	for _, line := range []string{
+		"commands: /help /connect <url-or-name> /disconnect /agents /agent save|remove|default <name>",
+		"          /card /chat /clear /quit",
+		"chat:     /stream on|off · /task <id> · /cancel <id> · /history <id> [n]",
+		"debug:    /wire on|off (capture raw frames; pane in M4)",
+		"keys:     enter send · esc cancel active stream · ctrl+t transcript · ctrl+g card · ? help",
+	} {
+		a.addStatus(line)
+	}
+	a.refreshTranscript()
+}
+
 // startConnect begins an async card resolution for ref (URL or saved
-// agent name) and marks the header state.
+// agent name), then builds the connection and session.
 func (a *App) startConnect(ref string) tea.Cmd {
 	a.agentRef = ref
 	a.connState = "connecting"
 	a.connecting = true
-	a.appendTranscript(styleDim.Render("resolving " + ref + "…"))
+	a.addStatus("resolving " + ref + "…")
+	a.refreshTranscript()
 
+	wireLog := a.wireLog
+	httpClient := a.httpClient
 	return func() tea.Msg {
 		url, mode := a.expandRef(ref)
 		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 		defer cancel()
-		res, err := agent.Resolve(ctx, a.httpClient, url, mode)
-		return connectResultMsg{ref: ref, url: url, resolved: res, err: err}
+		res, err := agent.Resolve(ctx, httpClient, url, mode)
+		if err != nil {
+			return connectResultMsg{ref: ref, url: url, resolved: res, err: err}
+		}
+		conn, err := agent.NewConn(ctx, res, httpClient, agent.WithWireLog(wireLog))
+		if err != nil {
+			return connectResultMsg{ref: ref, url: url, resolved: res, err: err}
+		}
+		return connectResultMsg{ref: ref, url: url, resolved: res, session: agent.NewSession(conn)}
 	}
 }
 
@@ -307,11 +432,11 @@ func isURLish(ref string) bool {
 func (a *App) listAgents() {
 	f, err := a.store.Load()
 	if err != nil {
-		a.appendTranscript(styleError.Render("/agents: " + err.Error()))
+		a.addStatus("/agents: " + err.Error())
 		return
 	}
 	if len(f.Agents) == 0 {
-		a.appendTranscript(styleDim.Render("no saved agents — /connect, then /agent save <name>"))
+		a.addStatus("no saved agents — /connect, then /agent save <name>")
 		return
 	}
 	for _, ag := range f.Agents {
@@ -323,28 +448,28 @@ func (a *App) listAgents() {
 		if ag.Protocol != "" {
 			line += "  (A2A " + ag.Protocol + ")"
 		}
-		a.appendTranscript(styleDim.Render(line))
+		a.addStatus(line)
 	}
 }
 
 // agentCommand implements /agent save|remove|default.
 func (a *App) agentCommand(args []string) tea.Cmd {
 	if len(args) != 2 {
-		a.appendTranscript(styleError.Render("usage: /agent save|remove|default <name>"))
+		a.addStatus("usage: /agent save|remove|default <name>")
 		return nil
 	}
 	sub, name := args[0], args[1]
 
 	f, err := a.store.Load()
 	if err != nil {
-		a.appendTranscript(styleError.Render("/agent: " + err.Error()))
+		a.addStatus("/agent: " + err.Error())
 		return nil
 	}
 
 	switch sub {
 	case "save":
 		if a.conn == nil {
-			a.appendTranscript(styleError.Render("no connection to save — /connect first"))
+			a.addStatus("no connection to save — /connect first")
 			return nil
 		}
 		f.UpsertAgent(config.Agent{
@@ -353,36 +478,36 @@ func (a *App) agentCommand(args []string) tea.Cmd {
 			Protocol: a.conn.Wire,
 		})
 		if err := a.store.Save(f); err != nil {
-			a.appendTranscript(styleError.Render("/agent save: " + err.Error()))
+			a.addStatus("/agent save: " + err.Error())
 			return nil
 		}
-		a.appendTranscript(styleDim.Render("saved agent " + name + " → " + firstNonEmpty(a.connURL, a.conn.BaseURL)))
+		a.addStatus("saved agent " + name + " → " + firstNonEmpty(a.connURL, a.conn.BaseURL))
 
 	case "remove":
 		if !f.RemoveAgent(name) {
-			a.appendTranscript(styleError.Render("no saved agent named " + name))
+			a.addStatus("no saved agent named " + name)
 			return nil
 		}
 		if err := a.store.Save(f); err != nil {
-			a.appendTranscript(styleError.Render("/agent remove: " + err.Error()))
+			a.addStatus("/agent remove: " + err.Error())
 			return nil
 		}
-		a.appendTranscript(styleDim.Render("removed agent " + name))
+		a.addStatus("removed agent " + name)
 
 	case "default":
 		if _, ok := f.Agent(name); !ok {
-			a.appendTranscript(styleError.Render("no saved agent named " + name))
+			a.addStatus("no saved agent named " + name)
 			return nil
 		}
 		f.DefaultAgent = name
 		if err := a.store.Save(f); err != nil {
-			a.appendTranscript(styleError.Render("/agent default: " + err.Error()))
+			a.addStatus("/agent default: " + err.Error())
 			return nil
 		}
-		a.appendTranscript(styleDim.Render("default agent: " + name))
+		a.addStatus("default agent: " + name)
 
 	default:
-		a.appendTranscript(styleError.Render("unknown /agent subcommand: " + sub + " (save, remove, default)"))
+		a.addStatus("unknown /agent subcommand: " + sub + " (save, remove, default)")
 	}
 	return nil
 }
@@ -396,17 +521,6 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// appendTranscript adds a line to the transcript and keeps it glued to the
-// bottom when the user has not scrolled up.
-func (a *App) appendTranscript(line string) {
-	atBottom := a.transcript.AtBottom()
-	cur := a.transcript.View()
-	a.transcript.SetContent(cur + strings.TrimRight(line, "\n") + "\n")
-	if atBottom {
-		a.transcript.GotoBottom()
-	}
-}
-
 // layout recomputes sub-view geometry after a resize.
 func (a *App) layout() {
 	if a.width == 0 || a.height == 0 {
@@ -414,8 +528,8 @@ func (a *App) layout() {
 	}
 	inputHeight := inputRows + 2 // + borders
 	a.input.SetWidth(a.width - 4)
-	a.transcript.Width = a.width - 2
-	a.transcript.Height = a.height - inputHeight - 2 // header + help
+	a.transcriptV.Width = a.width - 2
+	a.transcriptV.Height = a.height - inputHeight - 3 // header + status + help
 }
 
 // View implements tea.Model.
@@ -424,14 +538,14 @@ func (a *App) View() string {
 		return "loading…"
 	}
 	header := a.headerView()
-	body := a.transcript.View()
+	body := a.transcriptV.View()
 	if a.pane == paneCard {
-		body = a.cardPane.View(a.width-2, a.transcript.Height)
+		body = a.cardPane.View(a.width-2, a.transcriptV.Height)
 	}
+	status := a.statusLineView()
 	input := styleInputBox.Render(a.input.View())
 	footer := a.helpView()
-	gap := lipgloss.NewStyle().Height(1).Render("")
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, gap, input, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input, footer)
 }
 
 func (a *App) headerView() string {
@@ -441,6 +555,14 @@ func (a *App) headerView() string {
 	}
 	if a.protoVer != "" {
 		left += " · A2A " + a.protoVer
+	}
+	if a.connState == "connected" {
+		if a.streamMode {
+			left += " · stream"
+		}
+		if a.wireLog.Enabled() {
+			left += " · wire"
+		}
 	}
 	state := a.connState
 	if state == "" {
@@ -452,8 +574,28 @@ func (a *App) headerView() string {
 	return renderedLeft + gap + right
 }
 
+// statusLineView renders the one-line status bar: spinner while work is
+// in flight, else the last status text.
+func (a *App) statusLineView() string {
+	if a.inflight > 0 {
+		mode := "sending"
+		if a.streamMode {
+			mode = "streaming"
+		}
+		text := " " + mode + "…"
+		if a.statusText != "" {
+			text = " " + a.statusText
+		}
+		return styleStatus.Render(a.spinner.View() + text)
+	}
+	if a.statusText == "" {
+		return ""
+	}
+	return styleStatus.Render(" " + a.statusText)
+}
+
 func (a *App) helpView() string {
 	return styleHelp.Render(a.help.ShortHelpView([]key.Binding{
-		keys.Send, keys.PaneTranscript, keys.PaneCard, keys.Help, keys.Quit,
+		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.Help, keys.Quit,
 	}))
 }

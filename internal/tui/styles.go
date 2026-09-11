@@ -22,6 +22,8 @@ var (
 	styleCardOK     = lipgloss.NewStyle().Foreground(colorOK)
 	styleCardOff    = lipgloss.NewStyle().Foreground(colorDim)
 	styleCardHeader = lipgloss.NewStyle().Bold(true).Foreground(colorDim) // table headers
+
+	styleStatus = lipgloss.NewStyle().Foreground(colorAccent)
 )
 
 // styleState returns the style for the connection-state pill in the header.

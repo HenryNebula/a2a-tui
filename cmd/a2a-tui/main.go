@@ -53,8 +53,13 @@ func main() {
 		}
 	}
 
-	if _, err := tea.NewProgram(tui.New(agentRef, mode, store), tea.WithAltScreen()).Run(); err != nil {
+	prog, err := tea.NewProgram(tui.New(agentRef, mode, store), tea.WithAltScreen()).Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "a2a-tui:", err)
 		os.Exit(1)
+	}
+	// Tear down the session (pumps, connection) after the UI exits.
+	if app, ok := prog.(*tui.App); ok {
+		app.Shutdown()
 	}
 }
