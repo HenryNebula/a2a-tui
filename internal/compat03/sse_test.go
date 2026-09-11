@@ -2,6 +2,7 @@ package compat03
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -216,5 +217,77 @@ func TestFramesTerminatesOnJunk(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("junk case %d did not terminate", i)
 		}
+	}
+}
+
+// shortenIdleTimeout points the global SSE idle timeout at d for the
+// duration of the test.
+func shortenIdleTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	restore := idleReadTimeout
+	idleReadTimeout = d
+	t.Cleanup(func() { idleReadTimeout = restore })
+}
+
+func TestFramesIdleWatchdogUnblocksSilentStream(t *testing.T) {
+	// Issue #37: stdlib response bodies carry no read deadline, so a
+	// stream that fell silent blocked readLine forever. The watchdog
+	// must close the body and surface an idle error instead.
+	shortenIdleTimeout(t, 100*time.Millisecond)
+
+	pr, pw := io.Pipe()
+	_ = pw // never written nor closed: reads block until the watchdog fires
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+	}
+	done := make(chan error, 1)
+	go func() {
+		var firstErr error
+		for _, err := range Frames(context.Background(), resp) {
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		done <- firstErr
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "idle") {
+			t.Fatalf("err = %v, want idle timeout", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("silent stream was not unblocked by the idle watchdog")
+	}
+}
+
+func TestFramesWatchdogResetOnProgress(t *testing.T) {
+	// A stream that keeps producing frames well past the idle timeout
+	// must never trip the watchdog.
+	shortenIdleTimeout(t, 250*time.Millisecond)
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		for i := 0; i < 8; i++ {
+			fmt.Fprintf(pw, "data: %d\n\n", i)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+	}
+	var frames []string
+	for frame, err := range Frames(context.Background(), resp) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		frames = append(frames, string(frame))
+	}
+	if len(frames) != 8 || frames[0] != "0" || frames[7] != "7" {
+		t.Fatalf("frames = %q, want 0..7", frames)
 	}
 }

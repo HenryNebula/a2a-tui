@@ -660,6 +660,105 @@ func TestClientStreamIgnoresNullResultFrames(t *testing.T) {
 	}
 }
 
+func TestClientStreamIdleWatchdogOnRealBody(t *testing.T) {
+	// Issue #37: real stdlib response bodies (HTTP/1 bodyEOFSignal,
+	// HTTP/2 transportResponseBody) carry no read deadline, so the old
+	// deadline fast path never engaged and a stream that fell silent
+	// hung forever. The watchdog must end it over real HTTP too.
+	shortenIdleTimeout(t, 150*time.Millisecond)
+
+	fake := newFakeAgent().on(methodStream, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":null}\n\n")
+		flusher.Flush()
+		<-r.Context().Done() // then fall silent for good
+	})
+	c := newTestClient(t, fake)
+
+	done := make(chan error, 1)
+	go func() {
+		var streamErr error
+		for _, err := range c.SendStreamingMessage(context.Background(), pongRequest()) {
+			if err != nil {
+				streamErr = err
+				break
+			}
+		}
+		done <- streamErr
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "idle") {
+			t.Fatalf("err = %v, want idle timeout", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("silent stream was not unblocked by the idle watchdog")
+	}
+}
+
+func TestReadCappedRejectsOversize(t *testing.T) {
+	// Issue #38: readCapped used to hand back the truncated bytes, which
+	// then failed downstream as a confusing JSON "unexpected EOF". The
+	// cap must fail here, explicitly.
+	big := strings.Repeat("a", maxResponseBytes+1)
+	if _, err := readCapped(strings.NewReader(big)); !errors.Is(err, errResponseTooLarge) {
+		t.Fatalf("err = %v, want errResponseTooLarge", err)
+	}
+	if _, err := readCapped(strings.NewReader(strings.Repeat("a", maxResponseBytes))); err != nil {
+		t.Fatalf("exact-cap body should pass: %v", err)
+	}
+	data, err := readCapped(strings.NewReader(`{"ok":true}`))
+	if err != nil || string(data) != `{"ok":true}` {
+		t.Fatalf("data = %q, err = %v", data, err)
+	}
+}
+
+func TestClientOversizedResponseErrors(t *testing.T) {
+	// The full body is exactly one byte over the cap, so the oversize is
+	// detected without leaving the server mid-write.
+	prefix := `{"jsonrpc":"2.0","id":"1","result":"`
+	suffix := `"}`
+	oversized := prefix + strings.Repeat("x", maxResponseBytes+1-len(prefix)-len(suffix)) + suffix
+
+	fake := newFakeAgent().on(methodSend, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, oversized)
+	})
+	c := newTestClient(t, fake)
+	_, err := c.SendMessage(context.Background(), pongRequest())
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Fatalf("err = %v, want errResponseTooLarge", err)
+	}
+	if !strings.Contains(err.Error(), "message/send") {
+		t.Errorf("error lacks method context: %v", err)
+	}
+	if strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("truncated-body decode error leaked: %v", err)
+	}
+}
+
+func TestClientOversizedStreamRejectionBodyErrors(t *testing.T) {
+	// Same cap, exercised through the non-SSE rejection path of a
+	// streaming call.
+	fake := newFakeAgent().on(methodStream, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxResponseBytes+1))
+	})
+	c := newTestClient(t, fake)
+	for _, err := range c.SendStreamingMessage(context.Background(), pongRequest()) {
+		if err == nil {
+			t.Fatal("expected an error event")
+		}
+		if !errors.Is(err, errResponseTooLarge) || !strings.Contains(err.Error(), "message/stream") {
+			t.Fatalf("err = %v, want capped error with method context", err)
+		}
+		break
+	}
+}
+
 func TestClientWireLogTransport(t *testing.T) {
 	log := wirelog.New(16)
 	fake := newFakeAgent().on(methodSend, replyJSON(http.StatusOK, string(loadFixture(t, "send-message-result.json"))))

@@ -1,6 +1,7 @@
 package compat03
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -45,8 +46,14 @@ func FuzzFrames(f *testing.F) {
 				t.Fatalf("parser produced unbounded frames from a finite body")
 			}
 			if json.Valid(frame) {
+				// UseNumber: json.Valid accepts arbitrarily large JSON
+				// numbers (RFC 8259), but Unmarshal into any overflows
+				// float64 on them — the parser's byte-exact delivery is
+				// still correct, so the oracle must decode losslessly.
 				var v any
-				if err := json.Unmarshal(frame, &v); err != nil {
+				dec := json.NewDecoder(bytes.NewReader(frame))
+				dec.UseNumber()
+				if err := dec.Decode(&v); err != nil {
 					t.Fatalf("valid JSON frame failed to unmarshal: %v", err)
 				}
 			}

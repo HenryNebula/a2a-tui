@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,24 +23,58 @@ const (
 	maxLineBytes = 1 << 20
 	// maxEventBytes caps the accumulated payload of one event (1MB).
 	maxEventBytes = 1 << 20
-	// idleReadTimeout bounds how long a stream may stay silent before
-	// the client gives up (deadline reset on every read).
-	idleReadTimeout = 60 * time.Second
 	// sseReadBuffer is the bufio buffer size; lines longer than this are
 	// accumulated across ErrBufferFull reads.
 	sseReadBuffer = 64 << 10
 )
+
+// idleReadTimeout bounds how long a stream may stay silent before the
+// client gives up. It is deliberately generous — well-behaved agents
+// ping long-running tasks rarely — and a var only so tests can shorten
+// it.
+var idleReadTimeout = 5 * time.Minute
 
 // Frame is the raw payload of one server-sent event: the concatenation
 // (newline-joined) of every `data:` line in the event.
 type Frame []byte
 
 // readDeadliner is implemented by response bodies whose transport can
-// bound reads in time (HTTP/2 bodies do; plain HTTP/1 bodies do not,
-// those streams rely on context cancellation instead).
+// bound reads in time. Stdlib client bodies (HTTP/1 *bodyEOFSignal,
+// HTTP/2 http2transportResponseBody) do not implement it, so for real
+// connections only the idleWatchdog below bounds a silent stream; the
+// assertion is kept for exotic bodies (files, pipes) that do.
 type readDeadliner interface {
 	SetReadDeadline(time.Time) error
 }
+
+// idleWatchdog closes the body when the stream stays silent for
+// idleReadTimeout, unblocking a stuck read with an error: closing is the
+// only way to interrupt a body that carries no read deadline. The timer
+// is reset after every successful read, so only true idleness trips it.
+type idleWatchdog struct {
+	timer *time.Timer
+	fired atomic.Bool
+}
+
+// newIdleWatchdog arms the watchdog against body.
+func newIdleWatchdog(body io.Closer) *idleWatchdog {
+	w := &idleWatchdog{}
+	w.timer = time.AfterFunc(idleReadTimeout, func() {
+		w.fired.Store(true)
+		_ = body.Close() // unblocks the pending Read; safe to close twice
+	})
+	return w
+}
+
+// kick resets the timer after read progress.
+func (w *idleWatchdog) kick() {
+	if !w.fired.Load() {
+		w.timer.Reset(idleReadTimeout)
+	}
+}
+
+// stop disarms the watchdog when iteration ends before the timeout.
+func (w *idleWatchdog) stop() { w.timer.Stop() }
 
 // Frames reads a text/event-stream body, yielding one Frame per event.
 //
@@ -49,8 +84,9 @@ type readDeadliner interface {
 //   - multiple `data:` lines per event are joined with "\n" per the SSE
 //     spec; `event:`, `id:` and `retry:` lines, `:` comments, keep-alive
 //     blank events, and CRLF endings are tolerated;
-//   - reads carry a 60s idle deadline (reset per read, where the
-//     transport supports it) so silent streams eventually surface an
+//   - silent streams are bounded: a read deadline is set where the body
+//     supports it, and an independent watchdog closes the body after
+//     idleReadTimeout without read progress, so reads unblock with an
 //     error instead of hanging forever;
 //   - ctx cancellation stops iteration promptly;
 //   - lines and events over 1MB produce an error, never a panic.
@@ -65,6 +101,8 @@ func Frames(ctx context.Context, resp *http.Response) iter.Seq2[Frame, error] {
 		defer func() { _ = resp.Body.Close() }()
 
 		deadliner, _ := resp.Body.(readDeadliner)
+		watchdog := newIdleWatchdog(resp.Body)
+		defer watchdog.stop()
 		reader := bufio.NewReaderSize(resp.Body, sseReadBuffer)
 
 		var (
@@ -90,6 +128,7 @@ func Frames(ctx context.Context, resp *http.Response) iter.Seq2[Frame, error] {
 			}
 
 			line, err := readLine(reader)
+			watchdog.kick()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					// Tolerate streams that close without a trailing
@@ -99,7 +138,7 @@ func Frames(ctx context.Context, resp *http.Response) iter.Seq2[Frame, error] {
 					}
 					return
 				}
-				yield(nil, readError(err))
+				yield(nil, readError(err, watchdog.fired.Load()))
 				return
 			}
 
@@ -176,9 +215,13 @@ func trimEOL(line []byte) []byte {
 	return bytes.TrimSuffix(line, []byte("\r"))
 }
 
-// readError classifies a body-read failure: idle timeouts are reported
-// as such, deadlines surface verbatim, everything else wraps the cause.
-func readError(err error) error {
+// readError classifies a body-read failure: idle timeouts (deadline
+// expiry or the watchdog closing a silent body) are reported as such,
+// everything else wraps the cause.
+func readError(err error, watchdogFired bool) error {
+	if watchdogFired {
+		return fmt.Errorf("compat03: stream idle for over %s", idleReadTimeout)
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return fmt.Errorf("compat03: stream idle for over %s", idleReadTimeout)

@@ -31,12 +31,18 @@ const (
 	readHardCap = 1 << 20 // 1MB
 )
 
-// redactHeaders lists headers whose values must never be captured.
+// redactHeaders lists headers whose values must never be captured: the
+// standard credential headers, the A2A push-notification webhook token,
+// and the spellings common API-key gateways use.
 var redactHeaders = map[string]bool{
-	"authorization":       true,
-	"proxy-authorization": true,
-	"cookie":              true,
-	"set-cookie":          true,
+	"authorization":          true,
+	"proxy-authorization":    true,
+	"cookie":                 true,
+	"set-cookie":             true,
+	"a2a-notification-token": true,
+	"x-api-key":              true,
+	"api-key":                true,
+	"x-auth-token":           true,
 }
 
 // Entry is one captured request/response exchange. Either Err is non-empty
@@ -136,10 +142,15 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return t.base.RoundTrip(req)
 	}
 
-	reqBody, reqTrunc := captureRequestBody(req)
+	reqBody, reqTrunc, consumed := captureRequestBody(req)
 
 	clone := req.Clone(req.Context())
-	if reqBody != nil {
+	if consumed {
+		// The original stream was drained for capture (no GetBody): the
+		// clone must send a fresh reader over the captured bytes. When
+		// the request is replayable the untouched original body rides
+		// along — swapping it for the (capped) capture would truncate
+		// oversized requests on the wire.
 		clone.Body = io.NopCloser(bytes.NewReader(reqBody))
 		clone.ContentLength = int64(len(reqBody))
 	}
@@ -170,27 +181,30 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-// captureRequestBody drains a copy of the request body. It never consumes
-// the original stream: when the request is replayable (GetBody set — the
-// common case for JSON-RPC posts) the original body is left untouched.
-func captureRequestBody(req *http.Request) ([]byte, bool) {
+// captureRequestBody captures a copy of the request body, reporting the
+// bytes read, whether they exceeded MaxBodyBytes, and whether the original
+// stream was consumed. It never consumes the original stream when the
+// request is replayable (GetBody set — the common case for JSON-RPC
+// posts): the caller then keeps sending the original body in full while
+// the capture may be capped. A non-replayable body must be drained to be
+// captured, and the caller is expected to send the captured bytes instead.
+func captureRequestBody(req *http.Request) (data []byte, trunc, consumed bool) {
 	if req.Body == nil || req.Body == http.NoBody {
-		return nil, false
+		return nil, false, false
 	}
 	if req.GetBody != nil {
-		r, err := req.GetBody()
-		if err == nil {
-			data, _ := io.ReadAll(io.LimitReader(r, MaxBodyBytes+1))
-			return data, len(data) > MaxBodyBytes
+		if r, err := req.GetBody(); err == nil {
+			data, _ = io.ReadAll(io.LimitReader(r, MaxBodyBytes+1))
+			return data, len(data) > MaxBodyBytes, false
 		}
 	}
 	// Non-replayable body: read it fully (bounded) and hand the caller a
 	// fresh reader over the same bytes via the cloned request.
-	data, _ := io.ReadAll(io.LimitReader(req.Body, readHardCap+1))
+	data, _ = io.ReadAll(io.LimitReader(req.Body, readHardCap+1))
 	if data == nil {
 		data = []byte{}
 	}
-	return data, len(data) > MaxBodyBytes
+	return data, len(data) > MaxBodyBytes, true
 }
 
 // capBytes trims b to MaxBodyBytes.

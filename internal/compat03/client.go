@@ -382,7 +382,7 @@ func (c *Client) jsonBodyError(method string, resp *http.Response) error {
 	defer func() { _ = resp.Body.Close() }()
 	body, err := readCapped(resp.Body)
 	if err != nil {
-		return fmt.Errorf("compat03: %s failed: %s (unreadable body: %v)", method, resp.Status, err)
+		return fmt.Errorf("compat03: %s failed: %s (unreadable body: %w)", method, resp.Status, err)
 	}
 	if rpcErr := parseErrorBody(body); rpcErr != nil {
 		return rpcErr
@@ -412,10 +412,23 @@ func decodeResult(resp *rpcResponse, out any) error {
 	return nil
 }
 
+// errResponseTooLarge reports a body that exceeded maxResponseBytes:
+// reading stops at the cap, and decoding the truncated bytes would only
+// surface a confusing "unexpected EOF".
+var errResponseTooLarge = errors.New("body exceeds response size cap")
+
 // readCapped reads up to maxResponseBytes plus one byte (so oversize is
-// detectable).
+// detectable), failing with errResponseTooLarge instead of returning a
+// truncated body. Callers wrap the error with the method for context.
 func readCapped(r io.Reader) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxResponseBytes {
+		return nil, fmt.Errorf("%w (%d bytes)", errResponseTooLarge, maxResponseBytes)
+	}
+	return data, nil
 }
 
 // snippet quotes the start of a body for error messages.

@@ -1,6 +1,7 @@
 package wirelog
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,10 @@ func TestCaptureRequestResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer sekrit")
+	req.Header.Set("A2A-Notification-Token", "push-secret")
+	req.Header.Set("X-Api-Key", "key-secret")
+	req.Header.Set("Api-Key", "key-secret-2")
+	req.Header.Set("X-Auth-Token", "auth-secret")
 	req.Header.Set("X-Trace", "t1")
 
 	resp, err := log.Transport(nil).RoundTrip(req)
@@ -56,6 +61,11 @@ func TestCaptureRequestResponse(t *testing.T) {
 	}
 	if auth := e.ReqHeaders.Get("Authorization"); auth != "REDACTED" {
 		t.Fatalf("Authorization not redacted: %q", auth)
+	}
+	for _, h := range []string{"A2A-Notification-Token", "X-Api-Key", "Api-Key", "X-Auth-Token"} {
+		if got := e.ReqHeaders.Get(h); got != "REDACTED" {
+			t.Fatalf("%s not redacted: %q", h, got)
+		}
 	}
 	if tr := e.ReqHeaders.Get("X-Trace"); tr != "t1" {
 		t.Fatalf("X-Trace lost: %q", tr)
@@ -201,6 +211,51 @@ func TestStreamingBodyCommitsOnClose(t *testing.T) {
 	e := log.Last()
 	if e == nil || string(e.RespBody) != chunks[0]+chunks[1] {
 		t.Fatalf("stream not captured: %+v", e)
+	}
+}
+
+func TestLargeRequestBodyNotTruncatedOnWire(t *testing.T) {
+	// Issue #29: the capped capture used to replace the outgoing body,
+	// silently truncating oversized requests the agent received. The
+	// server must see every byte whether or not the request is
+	// replayable; only the captured copy is capped.
+	big := strings.Repeat("x", MaxBodyBytes+32*1024)
+	for _, tc := range []struct {
+		name   string
+		replay bool
+	}{
+		{"replayable body (GetBody set)", true},
+		{"streamed body (no GetBody)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n, _ := io.Copy(io.Discard, r.Body)
+				fmt.Fprintf(w, "%d", n)
+			}))
+			defer srv.Close()
+
+			req := mustPostBody(t, srv.URL, big)
+			if !tc.replay {
+				req.GetBody = nil // force the drain path
+			}
+			log := New(0)
+			resp, err := log.Transport(nil).RoundTrip(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if string(body) != fmt.Sprint(len(big)) {
+				t.Fatalf("server received %s of %d bytes", body, len(big))
+			}
+			e := log.Last()
+			if e == nil {
+				t.Fatal("no entry captured")
+			}
+			if len(e.ReqBody) != MaxBodyBytes || !e.ReqTrunc {
+				t.Fatalf("capture not capped: len=%d trunc=%v", len(e.ReqBody), e.ReqTrunc)
+			}
+		})
 	}
 }
 
