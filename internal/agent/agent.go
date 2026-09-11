@@ -10,12 +10,9 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 
 	"github.com/HenryNebula/a2a-tui/internal/agent/connv1"
+	"github.com/HenryNebula/a2a-tui/internal/compat03"
 	"github.com/HenryNebula/a2a-tui/internal/wirelog"
 )
-
-// ErrCompat03Pending is returned by NewConn for 0.3-resolution agents
-// until the dedicated compat client lands (milestone M4).
-var ErrCompat03Pending = errors.New("A2A 0.3 connections are not implemented yet (pending milestone M4)")
 
 // AgentConn is the version-agnostic seam between the app and an agent.
 // Both wire-protocol clients (connv1 now, compat03 in M4) implement it,
@@ -89,8 +86,22 @@ func NewConn(ctx context.Context, res *Resolved, httpClient *http.Client, opts .
 			wire:    res.Wire,
 			base:    res.BaseURL,
 		}, nil
+	case WireV03:
+		if res.CardV03 == nil {
+			return nil, errors.New("v0.3 connection without a card")
+		}
+		conn, err := compat03.New(ctx, res.BaseURL, res.CardV03, httpClient, cfg.wireLog)
+		if err != nil {
+			return nil, err
+		}
+		return v03Adapter{
+			Client:  conn,
+			summary: res.Summary,
+			wire:    res.Wire,
+			base:    res.BaseURL,
+		}, nil
 	default:
-		return nil, fmt.Errorf("agent speaks A2A %s: %w", res.Wire, ErrCompat03Pending)
+		return nil, fmt.Errorf("agent speaks unknown A2A wire version %q", res.Wire)
 	}
 }
 
@@ -107,3 +118,17 @@ type v1Adapter struct {
 func (a v1Adapter) CardSummary() CardSummary { return a.summary }
 func (a v1Adapter) WireVersion() string      { return a.wire }
 func (a v1Adapter) BaseURL() string          { return a.base }
+
+// v03Adapter layers the display-oriented AgentConn methods over a raw
+// compat03.Client, exactly like v1Adapter does for connv1.Conn (the
+// compat package must not import this one, so the adapter lives here).
+type v03Adapter struct {
+	*compat03.Client
+	summary CardSummary
+	wire    string
+	base    string
+}
+
+func (a v03Adapter) CardSummary() CardSummary { return a.summary }
+func (a v03Adapter) WireVersion() string      { return a.wire }
+func (a v03Adapter) BaseURL() string          { return a.base }

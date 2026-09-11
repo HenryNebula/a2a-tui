@@ -1,0 +1,14 @@
+: connected
+
+event: message
+id: 1
+data: {"jsonrpc":"2.0","id":"7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f","result":{"id":"225d6247-06ba-4cda-a08b-33ae35c8dcfa","contextId":"05217e44-7e9f-473e-ab4f-2c2dde50a2b1","status":{"state":"submitted","timestamp":"2025-04-02T16:59:25.331844"},"history":[{"role":"user","parts":[{"kind":"text","text":"Reply with the single word: pong."}],"messageId":"bbb7dee1-cf5c-4683-8a6f-4114529da5eb","taskId":"225d6247-06ba-4cda-a08b-33ae35c8dcfa","contextId":"05217e44-7e9f-473e-ab4f-2c2dde50a2b1"}],"kind":"task"}}
+
+data: {"jsonrpc":"2.0","id":"7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f","result":{"taskId":"225d6247-06ba-4cda-a08b-33ae35c8dcfa","contextId":"05217e44-7e9f-473e-ab4f-2c2dde50a2b1","status":{"state":"working"},"kind":"status-update","final":false}}
+
+data: {"jsonrpc":"2.0","id":"7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f","result":{"taskId":"225d6247-06ba-4cda-a08b-33ae35c8dcfa","contextId":"05217e44-7e9f-473e-ab4f-2c2dde50a2b1","artifact":{"artifactId":"9b6934dd-37e3-4eb1-8766-962efaab63a1","name":"reply.txt","parts":[{"kind":"text","text":"po"}]},"append":false,"lastChunk":false,"kind":"artifact-update"}}
+
+data: {"jsonrpc":"2.0","id":"7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f","result":{"taskId":"225d6247-06ba-4cda-a08b-33ae35c8dcfa","contextId":"05217e44-7e9f-473e-ab4f-2c2dde50a2b1","artifact":{"artifactId":"9b6934dd-37e3-4eb1-8766-962efaab63a1","parts":[{"kind":"text","text":"ng"}]},"append":true,"lastChunk":true,"kind":"artifact-update"}}
+
+data: {"jsonrpc":"2.0","id":"7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f","result":{"taskId":"225d6247-06ba-4cda-a08b-33ae35c8dcfa","contextId":"05217e44-7e9f-473e-ab4f-2c2dde50a2b1","status":{"state":"completed","message":{"role":"agent","parts":[{"kind":"text","text":"pong"}],"messageId":"38f7c1e2-0b64-4b3a-9f2e-6d1c0a5b7e8f"},"timestamp":"2025-04-02T16:59:35.331844"},"final":true,"kind":"status-update"}}
+

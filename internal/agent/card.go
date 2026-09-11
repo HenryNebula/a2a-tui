@@ -11,6 +11,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/HenryNebula/a2a-tui/internal/compat03"
 )
 
 // Display caps applied while summarizing a card. Cards come from
@@ -26,59 +28,24 @@ const (
 	maxTags       = 32
 )
 
-// CardV03 is a lightweight decoding of the legacy (v0.3) agent card
-// served at /.well-known/agent.json. Only fields a2a-tui displays are
-// decoded; unknown fields are ignored.
-type CardV03 struct {
-	Name               string                       `json:"name"`
-	Description        string                       `json:"description"`
-	URL                string                       `json:"url"`
-	Version            string                       `json:"version"`
-	ProtocolVersion    string                       `json:"protocolVersion"`
-	Provider           *ProviderV03                 `json:"provider,omitempty"`
-	Capabilities       CapabilitiesV03              `json:"capabilities"`
-	DefaultInputModes  []string                     `json:"defaultInputModes"`
-	DefaultOutputModes []string                     `json:"defaultOutputModes"`
-	Skills             []SkillV03                   `json:"skills"`
-	SecuritySchemes    map[string]SecuritySchemeV03 `json:"securitySchemes,omitempty"`
-	Security           []map[string][]string        `json:"security,omitempty"`
-}
-
-// ProviderV03 is the provider block of a v0.3 card.
-type ProviderV03 struct {
-	Organization string `json:"organization"`
-	URL          string `json:"url"`
-}
-
-// CapabilitiesV03 is the capabilities block of a v0.3 card.
-type CapabilitiesV03 struct {
-	Streaming         bool `json:"streaming"`
-	PushNotifications bool `json:"pushNotifications"`
-}
-
-// SkillV03 is one skill in a v0.3 card. ID is optional in some early
-// cards, hence the pointer.
-type SkillV03 struct {
-	ID          *string  `json:"id,omitempty"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags,omitempty"`
-	Examples    []string `json:"examples,omitempty"`
-	InputModes  []string `json:"inputModes,omitempty"`
-	OutputModes []string `json:"outputModes,omitempty"`
-}
-
-// SecuritySchemeV03 is an OpenAPI-style security scheme entry from a
-// v0.3 card; only scalar fields are kept for display.
-type SecuritySchemeV03 struct {
-	Type             string `json:"type"`
-	Description      string `json:"description"`
-	Name             string `json:"name"`   // apiKey: header/query/cookie name
-	In               string `json:"in"`     // apiKey: location
-	Scheme           string `json:"scheme"` // http: auth scheme
-	BearerFormat     string `json:"bearerFormat"`
-	OpenIDConnectURL string `json:"openIdConnectUrl"`
-}
+// The v0.3 card types live in internal/compat03 (the compat client owns
+// the legacy wire flavor and needs the card it was built from); they are
+// aliased here so resolution and the card summarizer keep using the
+// agent-package names without an import cycle.
+type (
+	// CardV03 is a lightweight decoding of the legacy (v0.3) agent card
+	// served at /.well-known/agent.json.
+	CardV03 = compat03.CardV03
+	// ProviderV03 is the provider block of a v0.3 card.
+	ProviderV03 = compat03.ProviderV03
+	// CapabilitiesV03 is the capabilities block of a v0.3 card.
+	CapabilitiesV03 = compat03.CapabilitiesV03
+	// SkillV03 is one skill in a v0.3 card.
+	SkillV03 = compat03.SkillV03
+	// SecuritySchemeV03 is an OpenAPI-style security scheme entry from a
+	// v0.3 card.
+	SecuritySchemeV03 = compat03.SecuritySchemeV03
+)
 
 // CapabilitiesSummary reports the optional capabilities an agent
 // declares.

@@ -1,0 +1,51 @@
+{
+  "jsonrpc": "2.0",
+  "id": "11a2ad38-9d3f-4d1e-9db8-4f0e1a2b3c4d",
+  "result": {
+    "id": "225d6247-06ba-4cda-a08b-33ae35c8dcfa",
+    "contextId": "05217e44-7e9f-473e-ab4f-2c2dde50a2b1",
+    "status": {
+      "state": "completed",
+      "message": {
+        "role": "agent",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "pong"
+          }
+        ],
+        "messageId": "38f7c1e2-0b64-4b3a-9f2e-6d1c0a5b7e8f",
+        "taskId": "225d6247-06ba-4cda-a08b-33ae35c8dcfa",
+        "contextId": "05217e44-7e9f-473e-ab4f-2c2dde50a2b1"
+      },
+      "timestamp": "2025-04-02T16:59:35.331844Z"
+    },
+    "artifacts": [
+      {
+        "artifactId": "9b6934dd-37e3-4eb1-8766-962efaab63a1",
+        "name": "reply.txt",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "pong"
+          }
+        ]
+      }
+    ],
+    "history": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Reply with the single word: pong."
+          }
+        ],
+        "messageId": "bbb7dee1-cf5c-4683-8a6f-4114529da5eb",
+        "taskId": "225d6247-06ba-4cda-a08b-33ae35c8dcfa",
+        "contextId": "05217e44-7e9f-473e-ab4f-2c2dde50a2b1"
+      }
+    ],
+    "kind": "task"
+  }
+}

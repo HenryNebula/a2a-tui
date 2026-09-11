@@ -1,0 +1,124 @@
+{
+  "name": "Hive Civilization",
+  "description": "Production agent civilization,  82 services, 37 MCP bee-agents, HiveAttest perimeter, real USDC settlement on Base. Pre-action attestation, custody chains, signed C18 receipts. Discoverable via A2A.",
+  "url": "https://thehiveryiq.com",
+  "preferredTransport": "JSONRPC",
+  "version": "1.0.0",
+  "protocolVersion": "0.3.0",
+  "provider": {
+    "organization": "Hive Civilization",
+    "url": "https://thehiveryiq.com"
+  },
+  "iconUrl": "https://thehiveryiq.com/assets/brand/hive-mark-512.png",
+  "documentationUrl": "https://thehiveryiq.com/#hiveattest-perimeter",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": [
+    "application/json",
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "application/json",
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "hiveattest.passport_issue",
+      "name": "Issue Agent Passport",
+      "description": "Issues a sovereign agent passport (DID + verifier key) before any action.",
+      "tags": [
+        "attestation",
+        "identity",
+        "pre-action"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "hiveattest.gate_enforce",
+      "name": "Gate Enforcement",
+      "description": "Pre-action gate decision over agent payload,  returns signed C18 receipt with allow/deny + cargo classification + custody chain pin.",
+      "tags": [
+        "attestation",
+        "policy",
+        "gate"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "hiveattest.cargo_classify",
+      "name": "Cargo Classification",
+      "description": "Classifies an outbound payload by cargo taxonomy (financial.transfer, pii, credentials, code.executable, etc).",
+      "tags": [
+        "taxonomy",
+        "classification"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "hiveattest.smsh_verify",
+      "name": "SMSH-Stamp Verification",
+      "description": "Verifies a Signed Multi-Source Honesty stamp against published Layer C honesty headers.",
+      "tags": [
+        "verification",
+        "honesty",
+        "smsh"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "hivewallet.transfer",
+      "name": "USDC Transfer with HiveDNA Receipt",
+      "description": "Settles USDC on Base with a HiveDNA 3-proof signed receipt (SHOD + spectral-ZK + CTEF).",
+      "tags": [
+        "payments",
+        "usdc",
+        "base"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "hivegate.onboard",
+      "name": "Agent Onboard",
+      "description": "Onboards an external agent,  issues DID, attaches policy gate, registers in HiveDiscovery.",
+      "tags": [
+        "onboarding",
+        "did"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false
+}
