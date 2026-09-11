@@ -232,24 +232,28 @@ func TestDataModelMetadata(t *testing.T) {
 func TestExtractEnvelopes(t *testing.T) {
 	var data any
 	_ = json.Unmarshal([]byte(`[{"version":"v1.0","createSurface":{"surfaceId":"x"}}]`), &data)
-	envs, isA2UI := ExtractEnvelopes(data, map[string]any{"mimeType": "application/a2ui+json"})
-	if !isA2UI || len(envs) != 1 {
-		t.Fatalf("envs=%d isA2UI=%v", len(envs), isA2UI)
+	envs, isA2UI, err := ExtractEnvelopes(data, map[string]any{"mimeType": "application/a2ui+json"})
+	if err != nil || !isA2UI || len(envs) != 1 {
+		t.Fatalf("envs=%d isA2UI=%v err=%v", len(envs), isA2UI, err)
 	}
 	// Wrong mimeType: not A2UI.
-	if _, isA2UI := ExtractEnvelopes(data, map[string]any{"mimeType": "application/json"}); isA2UI {
+	if _, isA2UI, err := ExtractEnvelopes(data, map[string]any{"mimeType": "application/json"}); isA2UI || err != nil {
 		t.Error("wrong mimeType must not extract")
 	}
 	// No metadata: not A2UI.
-	if _, isA2UI := ExtractEnvelopes(data, nil); isA2UI {
+	if _, isA2UI, err := ExtractEnvelopes(data, nil); isA2UI || err != nil {
 		t.Error("nil metadata must not extract")
+	}
+	// Undecodable payload on an A2UI-marked part: error, not a silent empty batch.
+	if _, isA2UI, err := ExtractEnvelopes(any("not-json"), map[string]any{"mimeType": MimeTypeA2UI}); !isA2UI || err == nil {
+		t.Errorf("undecodable payload must error: isA2UI=%v err=%v", isA2UI, err)
 	}
 	// Single object data tolerance.
 	var single any
 	_ = json.Unmarshal([]byte(`{"version":"v1.0","createSurface":{"surfaceId":"y"}}`), &single)
-	envs, isA2UI = ExtractEnvelopes(single, map[string]any{"mimeType": MimeTypeA2UI})
-	if !isA2UI || len(envs) != 1 || envs[0].CreateSurface.SurfaceID != "y" {
-		t.Errorf("single-object tolerance failed: %v", envs)
+	envs, isA2UI, err = ExtractEnvelopes(single, map[string]any{"mimeType": MimeTypeA2UI})
+	if err != nil || !isA2UI || len(envs) != 1 || envs[0].CreateSurface.SurfaceID != "y" {
+		t.Errorf("single-object tolerance failed: envs=%v err=%v", envs, err)
 	}
 }
 

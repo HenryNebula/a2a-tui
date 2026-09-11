@@ -71,16 +71,14 @@ func SplitMessage(msg *a2a.Message, eng A2UIApplier) []Block {
 // the engine and returns the resulting snapshot blocks. The bool result
 // reports whether the part was A2UI at all.
 func extractA2UI(part *a2a.Part, eng A2UIApplier) ([]Block, bool) {
-	envs, ok := a2ui.ExtractEnvelopes(part.Data(), part.Metadata)
+	envs, ok, derr := a2ui.ExtractEnvelopes(part.Data(), part.Metadata)
 	if !ok {
 		return nil, false
 	}
+	if derr != nil {
+		return []Block{NewErrorBlock("a2ui: payload did not decode: "+derr.Error(), "")}, true
+	}
 	if len(envs) == 0 {
-		// ExtractEnvelopes discards decode errors; an empty batch on an
-		// A2UI-marked part means the payload was undecodable (or empty).
-		if part.Data() != nil {
-			return []Block{NewErrorBlock("a2ui: payload did not decode into envelopes", "")}, true
-		}
 		return nil, true
 	}
 	if eng == nil {

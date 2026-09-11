@@ -392,22 +392,19 @@ func (e *Engine) DataModelMetadata(surfaceIDs ...string) map[string]any {
 // tolerating a single object) into envelopes. The bool result reports
 // whether the part is A2UI at all; decode failures return the envelopes
 // decoded so far plus an error.
-func ExtractEnvelopes(dataPartValue any, metadata map[string]any) ([]Envelope, bool) {
+func ExtractEnvelopes(dataPartValue any, metadata map[string]any) ([]Envelope, bool, error) {
 	if !isA2UIMetadata(metadata) {
-		return nil, false
+		return nil, false, nil
 	}
 	raw, err := json.Marshal(dataPartValue)
-	if err != nil || len(raw) == 0 {
-		return nil, true
-	}
-	envs, err := DecodeEnvelopes(raw)
 	if err != nil {
-		if envs == nil {
-			envs = nil
-		}
-		return envs, true
+		return nil, true, fmt.Errorf("encode data part: %w", err)
 	}
-	return envs, true
+	if len(raw) == 0 {
+		return nil, true, nil
+	}
+	envs, derr := DecodeEnvelopes(raw)
+	return envs, true, derr
 }
 
 // isA2UIMetadata checks the mimeType marker on a decoded metadata map.
