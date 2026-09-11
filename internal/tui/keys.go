@@ -15,6 +15,8 @@ type keyMap struct {
 	PaneTranscript key.Binding
 	PaneCard       key.Binding
 	PaneSurface    key.Binding
+	PaneTasks      key.Binding
+	PaneWire       key.Binding
 }
 
 var keys = keyMap{
@@ -25,6 +27,8 @@ var keys = keyMap{
 	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "transcript")),
 	PaneCard:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "card")),
 	PaneSurface:    key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("ctrl+f", "a2ui surface")),
+	PaneTasks:      key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "tasks")),
+	PaneWire:       key.NewBinding(key.WithKeys("ctrl+w"), key.WithHelp("ctrl+w", "wire")),
 }
 
 // keyMatches reports whether msg presses the binding.

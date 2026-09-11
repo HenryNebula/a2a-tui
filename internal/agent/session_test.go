@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+
+	"github.com/HenryNebula/a2a-tui/internal/fixtureagent"
 )
 
 // fakeConn is an in-memory AgentConn used to drive the session pumps.
@@ -16,6 +20,8 @@ type fakeConn struct {
 	mu sync.Mutex
 
 	sends     []*a2a.SendMessageRequest
+	pushCfgs  []*a2a.PushConfig
+	pushErr   error
 	streamSeq func(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error]
 	subscribe func(ctx context.Context, id string) iter.Seq2[a2a.Event, error]
 	destroyed int
@@ -33,6 +39,13 @@ func (f *fakeConn) GetTask(_ context.Context, id string, _ *int) (*a2a.Task, err
 }
 func (f *fakeConn) CancelTask(context.Context, string) (*a2a.Task, error) { return nil, nil }
 func (f *fakeConn) CreateTaskPushConfig(_ context.Context, cfg *a2a.PushConfig) (*a2a.PushConfig, error) {
+	f.mu.Lock()
+	f.pushCfgs = append(f.pushCfgs, cfg)
+	err := f.pushErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 func (f *fakeConn) ListTaskPushConfigs(context.Context, string) ([]*a2a.PushConfig, error) {
@@ -82,6 +95,21 @@ func (f *fakeConn) lastSend() *a2a.SendMessageRequest {
 		return nil
 	}
 	return f.sends[len(f.sends)-1]
+}
+
+func (f *fakeConn) pushConfigCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.pushCfgs)
+}
+
+func (f *fakeConn) lastPushConfig() *a2a.PushConfig {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.pushCfgs) == 0 {
+		return nil
+	}
+	return f.pushCfgs[len(f.pushCfgs)-1]
 }
 
 // drain reads session events until pred matches, returning the matching
@@ -376,7 +404,12 @@ func TestSubscribeSnapshotFirst(t *testing.T) {
 			if !yield(snapshot, nil) {
 				return
 			}
-			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil)
+			if !yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil) {
+				return
+			}
+			// End on a terminal state: a non-terminal end would (correctly)
+			// trigger the resubscribe loop.
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateCompleted, nil), nil)
 		}
 	}
 	s := NewSession(conn)
@@ -490,5 +523,488 @@ func TestRegistryObservation(t *testing.T) {
 
 	if n := r.Count(); n != 2 {
 		t.Fatalf("count = %d, want 2", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stream reconnect
+// ---------------------------------------------------------------------------
+
+// fastReconnect shortens a session's backoff so reconnect tests run in
+// milliseconds.
+func fastReconnect(s *Session, attempts int) *Session {
+	s.reconnectInitial = time.Millisecond
+	s.reconnectMax = 2 * time.Millisecond
+	s.reconnectAttempts = attempts
+	return s
+}
+
+func TestStreamReconnectsAfterEarlyEnd(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-r", ContextID: "c-r"}
+
+	// The stream yields one working update, then simply ends (server closed
+	// the SSE connection early). No error, no terminal state.
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil)
+		}
+	}
+	// The resubscribe head is a full Task snapshot still in working (the
+	// dedupe case), followed by the completing update.
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			snap := &a2a.Task{ID: a2a.TaskID(id), ContextID: "c-r",
+				Status: a2a.TaskStatus{State: a2a.TaskStateWorking}}
+			if !yield(snap, nil) {
+				return
+			}
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateCompleted,
+				a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("done"))), nil)
+		}
+	}
+	s := fastReconnect(NewSession(conn), 5)
+	defer s.Shutdown()
+
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+
+	var reconnect *ReconnectingEvent
+	working, completed := 0, 0
+	done, seen := drain(s, isStreamDone, 2*time.Second)
+	if done == nil {
+		t.Fatalf("no done; seen=%v", seen)
+	}
+	if done.(StreamDoneEvent).Err != nil {
+		t.Fatalf("done err = %v", done.(StreamDoneEvent).Err)
+	}
+	for _, ev := range seen {
+		switch e := ev.(type) {
+		case ReconnectingEvent:
+			r := e
+			reconnect = &r
+		case TaskUpdateEvent:
+			switch e.State {
+			case a2a.TaskStateWorking:
+				working++
+			case a2a.TaskStateCompleted:
+				completed++
+			}
+		}
+	}
+	if reconnect == nil || reconnect.TaskID != "t-r" || reconnect.Attempt != 1 {
+		t.Fatalf("reconnecting event = %+v", reconnect)
+	}
+	if working != 1 {
+		t.Fatalf("working pills = %d, want 1 (snapshot must dedupe); events=%v", working, seen)
+	}
+	if completed != 1 {
+		t.Fatalf("completed pills = %d, want 1", completed)
+	}
+}
+
+func TestStreamReconnectsAfterError(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-e", ContextID: "c"}
+	boom := errors.New("connection reset")
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil) {
+				return
+			}
+			yield(nil, boom)
+		}
+	}
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			snap := &a2a.Task{ID: a2a.TaskID(id), Status: a2a.TaskStatus{State: a2a.TaskStateCompleted}}
+			yield(snap, nil)
+		}
+	}
+	s := fastReconnect(NewSession(conn), 5)
+	defer s.Shutdown()
+
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+
+	var reconnect *ReconnectingEvent
+	done, seen := drain(s, isStreamDone, 2*time.Second)
+	if done == nil {
+		t.Fatalf("no done; seen=%v", seen)
+	}
+	if done.(StreamDoneEvent).Err != nil {
+		t.Fatalf("done err = %v", done.(StreamDoneEvent).Err)
+	}
+	for _, ev := range seen {
+		if r, ok := ev.(ReconnectingEvent); ok {
+			reconnect = &r
+		}
+	}
+	if reconnect == nil || reconnect.Err == nil {
+		t.Fatalf("reconnecting event should carry the cause: %+v", reconnect)
+	}
+}
+
+func TestStreamReconnectBoundedAttempts(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-g", ContextID: "c"}
+	boom := errors.New("network down")
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil) {
+				return
+			}
+			yield(nil, boom)
+		}
+	}
+	// Every resubscribe keeps failing.
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			yield(nil, boom)
+		}
+	}
+	s := fastReconnect(NewSession(conn), 3)
+	defer s.Shutdown()
+
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+
+	attempts, gaveUp := 0, false
+	done, seen := drain(s, isStreamDone, 5*time.Second)
+	if done == nil {
+		t.Fatalf("no done; seen=%v", seen)
+	}
+	for _, ev := range seen {
+		switch e := ev.(type) {
+		case ReconnectingEvent:
+			attempts++
+		case ErrorEvent:
+			if strings.Contains(e.Err.Error(), "gave up reconnecting") {
+				gaveUp = true
+			}
+		}
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	if !gaveUp {
+		t.Fatalf("no give-up error; seen=%v", seen)
+	}
+	if done.(StreamDoneEvent).Err == nil {
+		t.Fatal("done should carry the give-up error")
+	}
+}
+
+func TestStreamReconnectStoppedByCancel(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-c", ContextID: "c"}
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil)
+		}
+	}
+	subCalls := 0
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {}
+	}
+	_ = subCalls
+	s := fastReconnect(NewSession(conn), 100)
+	defer s.Shutdown()
+
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+	// Let the first stream end and one reconnect cycle start, then cancel.
+	if _, seen := drain(s, func(ev Event) bool {
+		_, ok := ev.(ReconnectingEvent)
+		return ok
+	}, 2*time.Second); len(seen) == 0 {
+		t.Fatal("no reconnect attempt before cancel")
+	}
+	if n := s.CancelActive(); n != 1 {
+		t.Fatalf("CancelActive = %d, want 1", n)
+	}
+	done, seen := drain(s, isStreamDone, 2*time.Second)
+	if done == nil {
+		t.Fatalf("no done after cancel; seen=%v", seen)
+	}
+	if !errors.Is(done.(StreamDoneEvent).Err, context.Canceled) {
+		t.Fatalf("done err = %v, want context.Canceled", done.(StreamDoneEvent).Err)
+	}
+}
+
+func TestStreamFatalErrorSkipsReconnect(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-f", ContextID: "c"}
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil) {
+				return
+			}
+			yield(nil, a2a.ErrTaskNotFound)
+		}
+	}
+	subscribed := false
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		subscribed = true
+		return func(yield func(a2a.Event, error) bool) {}
+	}
+	s := fastReconnect(NewSession(conn), 5)
+	defer s.Shutdown()
+
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+	done, seen := drain(s, isStreamDone, 2*time.Second)
+	if done == nil {
+		t.Fatalf("no done; seen=%v", seen)
+	}
+	if !errors.Is(done.(StreamDoneEvent).Err, a2a.ErrTaskNotFound) {
+		t.Fatalf("done err = %v", done.(StreamDoneEvent).Err)
+	}
+	for _, ev := range seen {
+		if _, ok := ev.(ReconnectingEvent); ok {
+			t.Fatal("TaskNotFound must not trigger reconnect attempts")
+		}
+	}
+	if subscribed {
+		t.Fatal("SubscribeToTask must not be called for a fatal error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Push notifications
+// ---------------------------------------------------------------------------
+
+// pushToken reads the session's generated push token (test helper; the
+// token is unexported state).
+func pushToken(s *Session) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pushToken
+}
+
+func TestPushRegistersConfigForNewTasks(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-p", ContextID: "c-p"}
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewSubmittedTask(info, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("push"))), nil) {
+				return
+			}
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateCompleted, nil), nil)
+		}
+	}
+	s := fastReconnect(NewSession(conn), 5)
+	defer s.Shutdown()
+
+	url, err := s.StartPush("")
+	if err != nil {
+		t.Fatalf("StartPush: %v", err)
+	}
+	if !strings.Contains(url, "/push") {
+		t.Fatalf("push URL = %q", url)
+	}
+	s.SetPushEnabled(true)
+	if !s.PushEnabled() {
+		t.Fatal("push should be enabled")
+	}
+
+	s.SendStreaming(context.Background(), "push", SendOptions{})
+	if _, seen := drain(s, isStreamDone, 2*time.Second); seen == nil {
+		t.Fatal("no events")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for conn.pushConfigCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("no push config registered for the new task")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cfg := conn.lastPushConfig()
+	if string(cfg.TaskID) != "t-p" {
+		t.Fatalf("config task = %q, want t-p", cfg.TaskID)
+	}
+	if cfg.URL != url || cfg.Token == "" {
+		t.Fatalf("config url/token = %q/%q, want %q/<non-empty>", cfg.URL, cfg.Token, url)
+	}
+	// Exactly one registration per task even as more events arrive.
+	s.SendStreaming(context.Background(), "push", SendOptions{})
+	drain(s, isStreamDone, 2*time.Second)
+	time.Sleep(50 * time.Millisecond)
+	if n := conn.pushConfigCount(); n != 1 {
+		t.Fatalf("push configs = %d, want 1 (no duplicates per task)", n)
+	}
+}
+
+func TestPushDisabledByDefaultAndNoServer(t *testing.T) {
+	conn := &fakeConn{}
+	s := NewSession(conn)
+	defer s.Shutdown()
+	if s.PushEnabled() || s.PushURL() != "" {
+		t.Fatal("push must default off with no server")
+	}
+	info := a2a.TaskInfo{TaskID: "t-n", ContextID: "c"}
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewSubmittedTask(info, nil), nil) {
+				return
+			}
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateCompleted, nil), nil)
+		}
+	}
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+	drain(s, isStreamDone, 2*time.Second)
+	if n := conn.pushConfigCount(); n != 0 {
+		t.Fatalf("push configs = %d, want 0 while push is off", n)
+	}
+}
+
+func TestPushUnsupportedAutoDisables(t *testing.T) {
+	conn := &fakeConn{}
+	conn.pushErr = a2a.NewError(a2a.ErrPushNotificationNotSupported, "no push")
+	info := a2a.TaskInfo{TaskID: "t-u", ContextID: "c"}
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewSubmittedTask(info, nil), nil) {
+				return
+			}
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateCompleted, nil), nil)
+		}
+	}
+	s := NewSession(conn)
+	defer s.Shutdown()
+
+	if _, err := s.StartPush(""); err != nil {
+		t.Fatalf("StartPush: %v", err)
+	}
+	s.SetPushEnabled(true)
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+
+	note, seen := drain(s, func(ev Event) bool {
+		l, ok := ev.(StatusLineEvent)
+		return ok && strings.Contains(l.Text, "not supported")
+	}, 2*time.Second)
+	if note == nil {
+		t.Fatalf("no friendly unsupported note; seen=%v", seen)
+	}
+	if s.PushEnabled() {
+		t.Fatal("push should auto-disable after PushNotificationNotSupported")
+	}
+}
+
+func TestPushWebhookDeliversStampedEvents(t *testing.T) {
+	conn := &fakeConn{}
+	s := NewSession(conn)
+	defer s.Shutdown()
+
+	url, err := s.StartPush("")
+	if err != nil {
+		t.Fatalf("StartPush: %v", err)
+	}
+	tok := pushToken(s)
+	body := `{"statusUpdate": {"taskId": "t-w", "contextId": "c-w",
+		"status": {"state": "TASK_STATE_WORKING"}}}`
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("webhook POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("webhook status = %d", resp.StatusCode)
+	}
+
+	upd, seen := drain(s, func(ev Event) bool {
+		_, ok := ev.(TaskUpdateEvent)
+		return ok
+	}, 2*time.Second)
+	if upd == nil {
+		t.Fatalf("no task update from webhook; seen=%v", seen)
+	}
+	u := upd.(TaskUpdateEvent)
+	if u.Source != "push" || u.TaskID != "t-w" || u.State != a2a.TaskStateWorking {
+		t.Fatalf("update = %+v", u)
+	}
+	var hasStatusLine bool
+	for _, ev := range seen {
+		if l, ok := ev.(StatusLineEvent); ok && strings.Contains(l.Text, "⇄ push") {
+			hasStatusLine = true
+		}
+	}
+	if !hasStatusLine {
+		t.Fatalf("no ⇄ push status line; seen=%v", seen)
+	}
+	if _, ok := s.Registry().Get("t-w"); !ok {
+		t.Fatal("webhook event did not feed the registry")
+	}
+
+	// StopPush tears the server down and clears the URL.
+	s.StopPush()
+	if s.PushURL() != "" {
+		t.Fatal("PushURL should be empty after StopPush")
+	}
+	if r, err := http.Post(url, "application/json", strings.NewReader(body)); err == nil {
+		_ = r.Body.Close()
+		t.Fatal("webhook should be closed after StopPush")
+	}
+}
+
+// TestPushEndToEndThroughFixtureAgent drives the full push pipeline against
+// the in-process fixture agent (real SDK server): enable push, send the
+// "push" keyword over the stream, and assert at least one event arrives
+// through the WEBHOOK path (Source:"push").
+func TestPushEndToEndThroughFixtureAgent(t *testing.T) {
+	ts, err := fixtureagent.StartTest()
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	defer ts.Close()
+
+	res, err := Resolve(t.Context(), &http.Client{Timeout: 5 * time.Second}, ts.URL, Auto)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	conn, err := NewConn(t.Context(), res, nil)
+	if err != nil {
+		t.Fatalf("NewConn: %v", err)
+	}
+	s := fastReconnect(NewSession(conn), 5)
+	defer s.Shutdown()
+
+	pushURL, err := s.StartPush("")
+	if err != nil {
+		t.Fatalf("StartPush: %v", err)
+	}
+	s.SetPushEnabled(true)
+
+	s.SendStreaming(t.Context(), "push", SendOptions{})
+
+	var pushEvent *TaskUpdateEvent
+	var streamDone bool
+	deadline := time.After(10 * time.Second)
+	for pushEvent == nil {
+		select {
+		case ev := <-s.Events():
+			switch e := ev.(type) {
+			case TaskUpdateEvent:
+				if e.Source == "push" {
+					pushEvent = &e
+				}
+			case StreamDoneEvent:
+				streamDone = true
+				// Push copies can race past the stream's own completion;
+				// keep reading until the webhook copy lands.
+			case ErrorEvent:
+				t.Fatalf("unexpected error event: %v", e.Err)
+			}
+		case <-deadline:
+			t.Fatalf("no push-delivered event within 10s (streamDone=%v)", streamDone)
+		}
+	}
+	if pushEvent.TaskID == "" {
+		t.Fatalf("push event without task id: %+v", pushEvent)
+	}
+	if _, ok := s.Registry().Get(pushEvent.TaskID); !ok {
+		t.Fatalf("push task %q missing from registry", pushEvent.TaskID)
+	}
+	if !strings.HasPrefix(pushURL, "http://127.0.0.1:") {
+		t.Fatalf("push URL = %q", pushURL)
 	}
 }

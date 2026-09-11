@@ -534,3 +534,19 @@ func TestClearCommand(t *testing.T) {
 		t.Fatalf("transcript not cleared: %d blocks", a.transcript.Len())
 	}
 }
+
+func TestReconnectingStatus(t *testing.T) {
+	a := newTestApp(t, nil)
+	update(t, a, agentEventMsg{ev: agent.ReconnectingEvent{
+		TaskID: "t-9", Attempt: 2, Err: context.DeadlineExceeded,
+	}})
+	if !strings.Contains(a.statusText, "reconnecting task t-9") || !strings.Contains(a.statusText, "attempt 2") {
+		t.Fatalf("status = %q", a.statusText)
+	}
+
+	// A clean early end still reports the retry.
+	update(t, a, agentEventMsg{ev: agent.ReconnectingEvent{TaskID: "t-9", Attempt: 1}})
+	if !strings.Contains(a.statusText, "stream ended early") {
+		t.Fatalf("status = %q", a.statusText)
+	}
+}

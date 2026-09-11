@@ -38,6 +38,8 @@ const (
 	paneTranscript paneKind = iota
 	paneCard
 	paneSurface
+	paneTasks
+	paneWire
 )
 
 // App is the root application model.
@@ -82,8 +84,14 @@ type App struct {
 	transcriptV   viewport.Model
 	cardPane      CardPane
 	surfacePane   SurfacePane
+	tasksPane     TasksPane
+	wirePane      WirePane
 	input         textarea.Model
 	help          help.Model
+
+	// pushPublicURL overrides the advertised webhook URL (--push-public-url
+	// / A2A_TUI_PUSH_URL) for agents behind a tunnel.
+	pushPublicURL string
 
 	httpClient *http.Client
 	connecting bool
@@ -118,11 +126,18 @@ func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 		spinner:     sp,
 		transcriptV: vp,
 		cardPane:    NewCardPane(),
+		tasksPane:   NewTasksPane(),
+		wirePane:    NewWirePane(),
 		input:       ta,
 		help:        help.New(),
 		httpClient:  &http.Client{Timeout: 15 * time.Second},
 	}
 }
+
+// SetPushPublicURL overrides the push webhook URL handed to agents
+// (--push-public-url flag / A2A_TUI_PUSH_URL env). It only matters for
+// remote agents that must reach a tunnel instead of 127.0.0.1.
+func (a *App) SetPushPublicURL(url string) { a.pushPublicURL = url }
 
 // Init implements tea.Model.
 func (a *App) Init() tea.Cmd {
@@ -156,6 +171,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case keyMatches(m, keys.PaneSurface):
 			a.openSurface("")
 			return a, nil
+		case keyMatches(m, keys.PaneTasks):
+			a.openTasksPane()
+			return a, nil
+		case keyMatches(m, keys.PaneWire):
+			a.openWirePane()
+			return a, nil
 		case a.pane == paneSurface:
 			// The surface pane owns the keyboard (except the pane-switch
 			// and quit globals above). Esc leaves the pane — unless an
@@ -165,6 +186,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			cmd, _ := a.surfacePane.Update(m)
+			return a, cmd
+		case a.pane == paneTasks:
+			// The dashboard owns the keyboard: esc leaves the detail view
+			// (or the pane), enter/c/s/r act on the selected task.
+			if m.String() == "esc" {
+				if a.tasksPane.DetailOpen() {
+					a.tasksPane.CloseDetail()
+				} else {
+					a.pane = paneTranscript
+				}
+				return a, nil
+			}
+			cmd, _ := a.tasksPane.Update(m, a)
 			return a, cmd
 		case keyMatches(m, keys.Help):
 			a.showHelp()
@@ -177,6 +211,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Route scroll keys to the card pane when it is displayed; a
 		// consumed key never reaches the input or transcript.
 		if a.pane == paneCard && a.cardPane.Update(msg) {
+			return a, tea.Batch(cmds...)
+		}
+		// The wire pane consumes scroll keys plus "c" (clear); typing still
+		// reaches the input box.
+		if a.pane == paneWire && a.wirePane.Update(msg) {
 			return a, tea.Batch(cmds...)
 		}
 
@@ -202,6 +241,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case taskResultMsg:
 		a.handleTaskResult(m)
+		return a, nil
+
+	case tasksRefreshedMsg:
+		// ListTasks discovery finished; the registry already absorbed the
+		// results, so a plain re-render suffices.
+		a.syncTasksPane()
 		return a, nil
 	}
 
@@ -268,13 +313,20 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 		" · endpoint " + m.resolved.BaseURL)
 
 	if m.session != nil {
+		if a.session != nil {
+			// Tear the previous session's push webhook down before
+			// replacing it (it delivered straight into the old session).
+			a.session.StopPush()
+		}
 		a.session = m.session
 		a.lastTaskID = ""
 		a.lastContextID = ""
 		a.pending = nil
-		// The new session owns a fresh A2UI engine; drop the old pane.
+		// The new session owns a fresh A2UI engine and task registry;
+		// drop the old panes' state.
 		a.surfacePane.Close()
-		if a.pane == paneSurface {
+		a.tasksPane = NewTasksPane()
+		if a.pane == paneSurface || a.pane == paneTasks {
 			a.pane = paneTranscript
 		}
 	}
@@ -332,7 +384,8 @@ func (a *App) runCommand(line string) tea.Cmd {
 		a.inflight, a.statusText = 0, ""
 		a.cardPane.SetCard(nil)
 		a.surfacePane.Close()
-		if a.pane == paneSurface {
+		a.tasksPane = NewTasksPane()
+		if a.pane == paneSurface || a.pane == paneTasks {
 			a.pane = paneTranscript
 		}
 		a.addStatus("disconnected")
@@ -354,6 +407,12 @@ func (a *App) runCommand(line string) tea.Cmd {
 			a.addStatus("no card yet — /connect <url-or-name> first")
 			a.refreshTranscript()
 		}
+
+	case "/tasks":
+		a.openTasksPane()
+
+	case "/push":
+		return a.cmdPush(args)
 
 	case "/surface":
 		a.cmdSurface(args)
@@ -390,11 +449,15 @@ func (a *App) runCommand(line string) tea.Cmd {
 func (a *App) showHelp() {
 	for _, line := range []string{
 		"commands: /help /connect <url-or-name> /disconnect /agents /agent save|remove|default <name>",
-		"          /card /surface [id] /chat /clear /quit",
+		"          /card /tasks /surface [id] /chat /clear /quit",
 		"chat:     /stream on|off · /task <id> · /cancel <id> · /history <id> [n]",
-		"debug:    /wire on|off (capture raw frames; pane in M4)",
-		"keys:     enter send · esc cancel active stream · ctrl+t transcript · ctrl+g card · ? help",
-		"a2ui:     ctrl+f focus the latest surface · tab cycle · enter activate · esc back",
+		"push:     /push on|off — local webhook; every new task gets a config",
+		"          (remote agents need a tunnel: --push-public-url / A2A_TUI_PUSH_URL)",
+		"debug:    /wire [on|off] — raw frame capture; ctrl+w or /wire shows the pane",
+		"keys:     enter send · esc cancel stream/back · ctrl+t transcript · ctrl+g card",
+		"          ctrl+k tasks · ctrl+w wire · ctrl+f a2ui surface · ? help",
+		"tasks:    up/down select · enter detail · c cancel · s subscribe · r refresh",
+		"wire:     c clear · up/down scroll (auto-follows new frames)",
 	} {
 		a.addStatus(line)
 	}
@@ -570,11 +633,16 @@ func (a *App) View() string {
 	}
 	header := a.headerView()
 	body := a.transcriptV.View()
-	if a.pane == paneCard {
+	switch a.pane {
+	case paneCard:
 		body = a.cardPane.View(a.width-2, a.transcriptV.Height)
-	}
-	if a.pane == paneSurface {
+	case paneSurface:
 		body = a.surfacePane.View(a.width-2, a.transcriptV.Height)
+	case paneTasks:
+		body = a.tasksPane.View(a.width-2, a.transcriptV.Height)
+	case paneWire:
+		a.wirePane.Sync(a.wireLog.Snapshot())
+		body = a.wirePane.View(a.width-2, a.transcriptV.Height)
 	}
 	status := a.statusLineView()
 	input := styleInputBox.Render(a.input.View())
@@ -593,6 +661,9 @@ func (a *App) headerView() string {
 	if a.connState == "connected" {
 		if a.streamMode {
 			left += " · stream"
+		}
+		if a.session != nil && a.session.PushEnabled() {
+			left += " · push"
 		}
 		if a.wireLog.Enabled() {
 			left += " · wire"
@@ -629,7 +700,9 @@ func (a *App) statusLineView() string {
 }
 
 func (a *App) helpView() string {
-	return styleHelp.Render(a.help.ShortHelpView([]key.Binding{
-		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.PaneSurface, keys.Help, keys.Quit,
-	}))
+	short := a.help.ShortHelpView([]key.Binding{
+		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.PaneSurface,
+		keys.PaneTasks, keys.PaneWire, keys.Help, keys.Quit,
+	})
+	return styleHelp.Render(cell(short, max(20, a.width)))
 }

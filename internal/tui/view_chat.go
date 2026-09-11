@@ -68,7 +68,13 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 		if e.ContextID != "" {
 			a.lastContextID = e.ContextID
 		}
-		block := chat.NewTaskStateBlock(e.TaskID, e.State, e.StatusText)
+		statusText := e.StatusText
+		if e.Source == "push" {
+			// Badge webhook-delivered pills so their origin is visible in
+			// the transcript itself, not just the status line.
+			statusText = strings.TrimSpace("⇄ push " + statusText)
+		}
+		block := chat.NewTaskStateBlock(e.TaskID, e.State, statusText)
 		a.transcript.ReplaceByID(block.ID(), block)
 		switch {
 		case e.State == a2a.TaskStateInputRequired || e.State == a2a.TaskStateAuthRequired:
@@ -106,6 +112,13 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 			cmds = append(cmds, a.fetchTask("refresh", e.TaskID, nil))
 		}
 
+	case agent.ReconnectingEvent:
+		why := "stream ended early"
+		if e.Err != nil {
+			why = agent.FriendlyError(e.Err)
+		}
+		a.setStatus(why + " — reconnecting task " + e.TaskID + " (attempt " + strconv.Itoa(e.Attempt) + ")")
+
 	case agent.StreamDoneEvent:
 		if a.inflight > 0 {
 			a.inflight--
@@ -125,6 +138,7 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 	}
 
 	a.syncSurfacePane()
+	a.syncTasksPane()
 	a.refreshTranscript()
 	cmds = append(cmds, a.armListener(), a.spinnerCmd())
 	return tea.Batch(cmds...)
@@ -195,12 +209,15 @@ func (a *App) handleTaskResult(m taskResultMsg) {
 			a.transcript.Append(b)
 		}
 	}
+	// The tasks dashboard shows the same detail view for its selection.
+	a.tasksPane.SetDetail(m.task, a.engine())
 	switch m.op {
 	case "cancel":
 		a.setStatus("cancel requested for task " + m.id)
 	case "refresh":
 		a.setStatus("task " + m.id + " refreshed")
 	}
+	a.syncTasksPane()
 	a.syncSurfacePane()
 	a.refreshTranscript()
 }
@@ -248,26 +265,75 @@ func (a *App) cmdStream(args []string) tea.Cmd {
 	return nil
 }
 
-// cmdWire toggles wire capture (the /wire pane itself arrives in M4).
+// cmdWire toggles wire capture; without an argument it also opens the
+// wire pane (frames are kept in a ring regardless while capture is on).
 func (a *App) cmdWire(args []string) tea.Cmd {
 	if len(args) == 0 {
-		state := "off"
-		if a.wireLog.Enabled() {
-			state = "on"
-		}
-		a.addStatus("wire capture " + state + " (" + strconv.Itoa(len(a.wireLog.Snapshot())) + " frames buffered)")
+		a.wireLog.SetEnabled(true)
+		a.openWirePane()
+		a.addStatus("wire capture on · pane open (" + strconv.Itoa(len(a.wireLog.Snapshot())) + " frames buffered)")
 		a.refreshTranscript()
 		return nil
 	}
 	switch args[0] {
 	case "on":
 		a.wireLog.SetEnabled(true)
-		a.addStatus("wire capture on (frames kept for the /wire pane, M4)")
+		a.openWirePane()
+		a.addStatus("wire capture on · pane open")
 	case "off":
 		a.wireLog.SetEnabled(false)
-		a.addStatus("wire capture off")
+		a.addStatus("wire capture off (buffered frames are kept)")
 	default:
 		a.addStatus("usage: /wire [on|off]")
+	}
+	a.refreshTranscript()
+	return nil
+}
+
+// cmdPush implements /push on|off: boots (or reuses) the local webhook
+// server and registers a TaskPushNotificationConfig for every task
+// observed from then on. Remote agents cannot reach a loopback webhook —
+// point them at a tunnel via --push-public-url.
+func (a *App) cmdPush(args []string) tea.Cmd {
+	if a.session == nil {
+		a.addStatus("not connected — /connect <url-or-name> first")
+		a.refreshTranscript()
+		return nil
+	}
+	state := func() string {
+		if a.session.PushEnabled() {
+			return "on"
+		}
+		return "off"
+	}
+	if len(args) == 0 {
+		a.addStatus("push " + state() + " · usage: /push on|off")
+		if url := a.session.PushURL(); url != "" {
+			a.addStatus("webhook: " + url)
+		}
+		a.refreshTranscript()
+		return nil
+	}
+	switch args[0] {
+	case "on":
+		url, err := a.session.StartPush(a.pushPublicURL)
+		if err != nil {
+			a.addError("push", err)
+			a.refreshTranscript()
+			return nil
+		}
+		a.session.SetPushEnabled(true)
+		a.addStatus("push on · webhook " + url)
+		a.addStatus("new tasks are registered automatically; events arrive badged ⇄ push")
+		if a.pushPublicURL == "" {
+			a.addStatus("remote agents need a tunnel to reach this webhook (--push-public-url)")
+		}
+	case "off":
+		a.session.SetPushEnabled(false)
+		a.session.StopPush()
+		a.addStatus("push off (webhook stopped)")
+	default:
+		a.addStatus("usage: /push [on|off]")
 	}
 	a.refreshTranscript()
 	return nil

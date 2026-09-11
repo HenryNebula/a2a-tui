@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	colorAccent = lipgloss.Color("205")
@@ -22,6 +25,8 @@ var (
 
 	styleStatus = lipgloss.NewStyle().Foreground(colorAccent)
 
+	styleError = lipgloss.NewStyle().Foreground(colorError)
+
 	styleSurfacePrompt = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
@@ -32,6 +37,25 @@ func styleState(state string) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(colorOK).Bold(true)
 	case "error", "connecting":
 		return lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	default:
+		return lipgloss.NewStyle().Foreground(colorDim)
+	}
+}
+
+// styleTaskState returns the pill style for a task state. Live states are
+// colored (and the interactive ones bold); terminal states are dimmed so
+// finished work recedes behind live work.
+func styleTaskState(s a2a.TaskState) lipgloss.Style {
+	if s.Terminal() {
+		return lipgloss.NewStyle().Foreground(colorDim)
+	}
+	switch s {
+	case a2a.TaskStateInputRequired, a2a.TaskStateAuthRequired:
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	case a2a.TaskStateWorking:
+		return lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	case a2a.TaskStateSubmitted:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	default:
 		return lipgloss.NewStyle().Foreground(colorDim)
 	}

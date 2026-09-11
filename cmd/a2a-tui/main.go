@@ -17,10 +17,15 @@ import (
 )
 
 func main() {
-	var agentRef, protoFlag string
+	var agentRef, protoFlag, pushURL string
 	flag.StringVar(&agentRef, "agent", "", "A2A agent base URL (or saved agent name) to connect to at startup")
 	flag.StringVar(&protoFlag, "protocol", "auto", `wire protocol: "1.0", "0.3" or "auto" (detect from the agent card)`)
+	flag.StringVar(&pushURL, "push-public-url", "", "URL agents use for the /push webhook (tunnel address; env A2A_TUI_PUSH_URL; default http://127.0.0.1:<port>/push)")
 	flag.Parse()
+
+	if pushURL == "" {
+		pushURL = os.Getenv("A2A_TUI_PUSH_URL")
+	}
 
 	mode, err := agent.ParseProtocolMode(protoFlag)
 	if err != nil {
@@ -53,7 +58,10 @@ func main() {
 		}
 	}
 
-	prog, err := tea.NewProgram(tui.New(agentRef, mode, store), tea.WithAltScreen()).Run()
+	app := tui.New(agentRef, mode, store)
+	app.SetPushPublicURL(pushURL)
+
+	prog, err := tea.NewProgram(app, tea.WithAltScreen()).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "a2a-tui:", err)
 		os.Exit(1)
