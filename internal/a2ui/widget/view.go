@@ -28,7 +28,6 @@ var (
 	styleFocused  = lipgloss.NewStyle().Bold(true)
 	styleHint     = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	styleDimW     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	styleValue    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	styleHeading  = lipgloss.NewStyle().Bold(true)
 	styleDisabled = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )

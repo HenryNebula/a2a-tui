@@ -174,10 +174,6 @@ func (f *fakeAgent) lastSend() *a2a.SendMessageRequest {
 	return f.sends[len(f.sends)-1]
 }
 
-func writeResult(w http.ResponseWriter, payload any) {
-	writeResultWithID(w, 1, payload)
-}
-
 func writeResultWithID(w http.ResponseWriter, id any, payload any) {
 	result, err := json.Marshal(payload)
 	if err != nil {

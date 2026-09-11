@@ -22,11 +22,10 @@ import (
 
 // fakeConn records sends for assertions; all other methods are inert.
 type fakeConn struct {
-	mu     sync.Mutex
-	sends  []*a2a.SendMessageRequest
-	gets   []a2a.GetTaskRequest
-	seq    func(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error]
-	stream bool // whether SendStreaming uses the scripted seq
+	mu    sync.Mutex
+	sends []*a2a.SendMessageRequest
+	gets  []a2a.GetTaskRequest
+	seq   func(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error]
 }
 
 func (f *fakeConn) Card() *a2a.AgentCard           { return nil }

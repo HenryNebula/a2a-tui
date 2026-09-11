@@ -163,18 +163,19 @@ func (s *Store) writeFile(name string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("stage %s: %w", name, err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once renamed
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
+	fail := func(err error) error {
+		_ = tmp.Close()
 		return fmt.Errorf("stage %s: %w", name, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
 	}
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return fmt.Errorf("stage %s: %w", name, err)
+		return fail(err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("stage %s: %w", name, err)
+		return fail(err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("stage %s: %w", name, err)

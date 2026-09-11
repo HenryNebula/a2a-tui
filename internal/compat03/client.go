@@ -252,7 +252,7 @@ func (c *Client) post(ctx context.Context, method string, params any) (*rpcRespo
 	if err != nil {
 		return nil, transportError(ctx, method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := readCapped(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("compat03: read %s response: %w", method, err)
@@ -379,7 +379,7 @@ func (c *Client) stream(ctx context.Context, method string, params func() (any, 
 // error: a decoded JSON-RPC error when present, otherwise an
 // HTTP-status error quoting the body.
 func (c *Client) jsonBodyError(method string, resp *http.Response) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := readCapped(resp.Body)
 	if err != nil {
 		return fmt.Errorf("compat03: %s failed: %s (unreadable body: %v)", method, resp.Status, err)
@@ -476,7 +476,7 @@ func a2aError(e *rpcError) error {
 	}
 	err := a2a.NewError(sentinel, e.Message)
 	if len(e.Data) > 0 {
-		err.WithDetails(map[string]any{"data": e.Data})
+		err = err.WithDetails(map[string]any{"data": e.Data})
 	}
 	return err
 }

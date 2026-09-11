@@ -62,7 +62,7 @@ func Frames(ctx context.Context, resp *http.Response) iter.Seq2[Frame, error] {
 			yield(nil, errors.New("compat03: SSE response has no body"))
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		deadliner, _ := resp.Body.(readDeadliner)
 		reader := bufio.NewReaderSize(resp.Body, sseReadBuffer)

@@ -130,7 +130,7 @@ func (s *Server) Start(host string, port int) (string, func(), error) {
 	}
 	_, portStr, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return "", nil, fmt.Errorf("fixtureagent: resolve port: %w", err)
 	}
 	base := "http://" + net.JoinHostPort(host, portStr)

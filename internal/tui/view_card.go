@@ -44,13 +44,13 @@ func (p *CardPane) Update(msg tea.Msg) bool {
 	}
 	switch k.String() {
 	case "up":
-		p.viewport.LineUp(1)
+		p.viewport.ScrollUp(1)
 	case "down":
-		p.viewport.LineDown(1)
+		p.viewport.ScrollDown(1)
 	case "pgup":
-		p.viewport.HalfViewUp()
+		p.viewport.HalfPageUp()
 	case "pgdown":
-		p.viewport.HalfViewDown()
+		p.viewport.HalfPageDown()
 	case "home":
 		p.viewport.GotoTop()
 	case "end":

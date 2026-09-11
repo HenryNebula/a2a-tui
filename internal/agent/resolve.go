@@ -279,7 +279,7 @@ func fetchCard(ctx context.Context, client *http.Client, rawURL string) ([]byte,
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", rawURL, err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		data, err := io.ReadAll(io.LimitReader(f, maxCardBytes+1))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", rawURL, err)
@@ -302,7 +302,7 @@ func fetchCard(ctx context.Context, client *http.Client, rawURL string) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", rawURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: %s", rawURL, resp.Status)
 	}

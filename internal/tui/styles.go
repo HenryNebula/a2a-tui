@@ -5,14 +5,11 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	colorAccent = lipgloss.Color("205")
 	colorDim    = lipgloss.Color("241")
-	colorUser   = lipgloss.Color("39")
 	colorError  = lipgloss.Color("203")
 	colorOK     = lipgloss.Color("42")
 
 	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("62")).Padding(0, 1)
 	styleDim      = lipgloss.NewStyle().Foreground(colorDim)
-	styleUser     = lipgloss.NewStyle().Foreground(colorUser)
-	styleError    = lipgloss.NewStyle().Foreground(colorError)
 	styleHelp     = lipgloss.NewStyle().Foreground(colorDim)
 	styleInputBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), true).BorderForeground(colorDim).Padding(0, 1)
 

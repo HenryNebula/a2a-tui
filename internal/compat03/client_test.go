@@ -501,7 +501,7 @@ func TestClientErrorMapping(t *testing.T) {
 		fake := newFakeAgent().on(methodSend, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = io.WriteString(w, string(loadFixture(t, "humanbrowser-unauthorized-error.json")))
+			_, _ = w.Write(loadFixture(t, "humanbrowser-unauthorized-error.json"))
 		})
 		c := newTestClient(t, fake)
 		_, err := c.SendMessage(context.Background(), pongRequest())
@@ -560,7 +560,7 @@ func TestClientStreamServerErrors(t *testing.T) {
 		fake := newFakeAgent().on(methodStream, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = io.WriteString(w, string(loadFixture(t, "humanbrowser-unauthorized-error.json")))
+			_, _ = w.Write(loadFixture(t, "humanbrowser-unauthorized-error.json"))
 		})
 		c := newTestClient(t, fake)
 		for _, err := range c.SendStreamingMessage(context.Background(), pongRequest()) {

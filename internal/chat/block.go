@@ -193,12 +193,12 @@ func (b *TaskStateBlock) Render(width int) string {
 	}
 	dot := "●"
 	var styled string
-	switch {
-	case b.State == a2a.TaskStateCompleted:
+	switch b.State {
+	case a2a.TaskStateCompleted:
 		styled = styleOK.Bold(true).Render(dot + " " + StateLabel(b.State))
-	case b.State == a2a.TaskStateFailed || b.State == a2a.TaskStateRejected || b.State == a2a.TaskStateCanceled:
+	case a2a.TaskStateFailed, a2a.TaskStateRejected, a2a.TaskStateCanceled:
 		styled = styleError.Bold(true).Render(dot + " " + StateLabel(b.State))
-	case b.State == a2a.TaskStateInputRequired || b.State == a2a.TaskStateAuthRequired:
+	case a2a.TaskStateInputRequired, a2a.TaskStateAuthRequired:
 		styled = styleWarn.Bold(true).Render(dot + " " + StateLabel(b.State))
 	default:
 		styled = styleDim.Render(dot + " " + StateLabel(b.State))

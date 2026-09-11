@@ -524,10 +524,7 @@ func wrapLine(line string, width int) []string {
 	if lipgloss.Width(line) <= width {
 		return []string{line}
 	}
-	var words []string
-	for _, word := range strings.Fields(line) {
-		words = append(words, word)
-	}
+	words := strings.Fields(line)
 	if len(words) == 0 {
 		return []string{truncateCells(line, width)}
 	}
@@ -571,10 +568,9 @@ func truncateCells(s string, width int) string {
 	if width <= 1 {
 		return "…"
 	}
-	runes := []rune(s)
 	var b strings.Builder
 	acc := 0
-	for _, rn := range runes {
+	for _, rn := range s {
 		w := lipgloss.Width(string(rn))
 		if acc+w > width-1 {
 			break

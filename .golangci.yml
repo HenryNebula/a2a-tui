@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  default: standard
+  exclusions:
+    # Test helpers routinely ignore write/close errors to fixtures; the
+    # assertions carry the signal. Production code stays fully checked.
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck

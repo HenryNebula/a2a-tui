@@ -15,3 +15,7 @@ coverage.out
 
 # Local assistant configuration (machine-specific)
 .claude/
+
+# Stray root-level build outputs (go build ./cmd/... without -o)
+/a2a-tui
+/a2a-fixture-agent

@@ -411,7 +411,6 @@ func TestStreamErrorEndsPump(t *testing.T) {
 	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
 		return func(yield func(a2a.Event, error) bool) {
 			yield(nil, a2a.ErrTaskNotFound)
-			return
 		}
 	}
 	s := NewSession(conn)

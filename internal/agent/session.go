@@ -440,11 +440,6 @@ func mapCancel(err error, ctx context.Context) error {
 	return err
 }
 
-// iterSeq aliases the SDK streaming sequence type.
-type iterSeq interface {
-	~func(yield func(a2a.Event, error) bool)
-}
-
 // eventTaskID extracts the task ID an event belongs to.
 func eventTaskID(ev a2a.Event) string {
 	switch e := ev.(type) {
