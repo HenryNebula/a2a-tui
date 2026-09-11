@@ -23,6 +23,12 @@ visibility, a scripted fixture agent, and a live-agent smoke test).
   public ecosystem still has many 0.3 agents — including most of the
   streaming ones. The protocol version is auto-detected from the agent
   card; `--protocol` forces a dialect.
+- **Async task lifecycle**: streaming with automatic reconnect
+  (`SubscribeToTask` backoff, visible status lines), a tasks dashboard over
+  an event-fed registry (detail / cancel / subscribe / refresh), and
+  **push notifications** — a built-in loopback webhook listener with
+  per-task registration (`/push on`, tunnel support via
+  `--push-public-url`).
 - **Version-agnostic app**: both clients translate into the same types, so
   chat, tasks, streaming and A2UI work the same against either dialect.
 - **A2UI in the terminal** — the first terminal renderer for A2UI: all 18
@@ -33,10 +39,11 @@ visibility, a scripted fixture agent, and a live-agent smoke test).
   agent, whose `updateComponents` / `updateDataModel` envelopes mutate the
   live surface. Unknown components degrade gracefully.
 - **Testing tooling**: agent-card viewer (skills, capabilities, security
-  schemes), raw wire capture with a raw-frame peek on every error, A2A
-  error codes surfaced by name, protocol version always visible in the
-  header, a deterministic fixture agent, and `make smoke` against live
-  public agents.
+  schemes), raw wire capture with a wire pane and a raw-frame peek on
+  every error, a raw JSON-RPC console for arbitrary methods (dialect-aware
+  presets, `A2A-Version` toggle, history), A2A error codes surfaced by
+  name, protocol version always visible in the header, a deterministic
+  fixture agent, and `make smoke` against live public agents.
 
 Untrusted-content hardening throughout: agent text is ANSI-stripped and
 size-capped, media URLs are never fetched, and `openUrl` actions are gated
@@ -45,7 +52,7 @@ URL).
 
 ## Status
 
-Early development, heading to a v0.1.0 tag. Milestones (tracked in the
+v0.1.0 — all nine milestones landed (history in the
 [issue tracker](https://github.com/HenryNebula/a2a-tui/issues)):
 
 | Milestone | Scope | Status |
@@ -53,12 +60,12 @@ Early development, heading to a v0.1.0 tag. Milestones (tracked in the
 | M1 | scaffold, repo, CI | done |
 | M2 | config, card resolution, card viewer | done |
 | M3 | chat core on v1.0 | done |
-| M4 | 0.3 compat, tasks dashboard, wire log | in progress — 0.3 chat, `/task`, `/history`, `/cancel`, wire capture work; the dashboard and wire panes are landing |
-| M5 | fixture agent + e2e harness | fixture agent done; e2e harness pending |
-| M6 | push notifications | pending |
-| M7 | A2UI engine + static rendering | in progress — engine, renderer and golden fixtures in place |
+| M4 | 0.3 compat, tasks dashboard, wire log | done |
+| M5 | fixture agent + e2e harness | done |
+| M6 | push notifications | done |
+| M7 | A2UI engine + static rendering | done |
 | M8 | A2UI interactive | done |
-| M9 | raw console, polish, v0.1.0 | in progress — README, smoke test done; raw JSON-RPC console pending |
+| M9 | raw console, polish, v0.1.0 | done |
 
 ## Install / run
 
@@ -81,7 +88,7 @@ go run ./cmd/a2a-tui --agent http://127.0.0.1:8877       # the fixture agent
 | --- | --- | --- |
 | `--agent` | URL or saved agent name | connect at startup |
 | `--protocol` | `1.0`, `0.3`, `auto` (default) | force a wire dialect or detect it from the agent card |
-| `--push-public-url` | URL | public URL for the push-notification webhook listener (arriving with M6 push support) |
+| `--push-public-url` | URL | public URL for the push-notification webhook listener (for tunnels; also `A2A_TUI_PUSH_URL`) |
 
 Without `--agent` the app starts disconnected; use `/connect` inside.
 
@@ -93,12 +100,25 @@ Global:
 | --- | --- |
 | `enter` | send message / run slash command |
 | `alt+enter`, `ctrl+j` | newline in the input box |
-| `esc` | cancel the active send/stream; leave the surface pane |
+| `esc` | cancel the active send/stream; leave the surface/console pane |
 | `ctrl+t` | transcript pane |
 | `ctrl+g` | agent-card pane (scroll: `up`/`down`, `pgup`/`pgdown`, `home`/`end`) |
+| `ctrl+k` | tasks dashboard (cursor: `up`/`down`; `enter` detail, `c` cancel, `s` subscribe, `r` refresh) |
+| `ctrl+w` | wire pane: raw framed request/response traffic (`c` clears) |
+| `ctrl+e` | raw JSON-RPC console |
 | `ctrl+f` | focus the most recent A2UI surface |
-| `?` | help |
+| `?` | help overlay (full key + command reference) |
 | `ctrl+c`, `ctrl+d` | quit |
+
+Raw JSON-RPC console pane:
+
+| Key | Action |
+| --- | --- |
+| `tab`, `shift+tab` | cycle method presets for the connected dialect |
+| `up` / `down` (method field) | cycle the last 50 exchanges |
+| `ctrl+enter` (`alt+enter`, `ctrl+s`) | send the request |
+| `ctrl+v` | toggle the `A2A-Version` header (auto → on → off) |
+| `pgup`/`pgdn` | scroll the response |
 
 A2UI surface pane:
 
@@ -126,6 +146,9 @@ A2UI surface pane:
 | `/card` | | open the agent-card pane |
 | `/surface` | `[id]` | focus an A2UI surface (default: most recent) |
 | `/chat` | | back to the transcript pane |
+| `/tasks` | | open the tasks dashboard |
+| `/console` | | open the raw JSON-RPC console |
+| `/push` | `[on\|off]` | start/stop the push-notification webhook listener + per-task registration |
 | `/stream` | `[on\|off]` | toggle streaming (`SendStreamingMessage` SSE) vs blocking sends |
 | `/wire` | `[on\|off]` | toggle raw wire capture (frames buffered for the wire pane) |
 | `/task` | `[id]` | fetch a task snapshot into the transcript (default: last task) |

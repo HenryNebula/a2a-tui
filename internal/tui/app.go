@@ -40,6 +40,7 @@ const (
 	paneSurface
 	paneTasks
 	paneWire
+	paneConsole
 )
 
 // App is the root application model.
@@ -86,6 +87,9 @@ type App struct {
 	surfacePane   SurfacePane
 	tasksPane     TasksPane
 	wirePane      WirePane
+	consolePane   ConsolePane
+	helpPane      HelpPane
+	helpOpen      bool
 	input         textarea.Model
 	help          help.Model
 
@@ -116,7 +120,7 @@ func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 
-	return &App{
+	app := &App{
 		agentRef:    agentRef,
 		protoMode:   mode,
 		store:       store,
@@ -128,10 +132,24 @@ func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 		cardPane:    NewCardPane(),
 		tasksPane:   NewTasksPane(),
 		wirePane:    NewWirePane(),
+		consolePane: NewConsolePane(),
+		helpPane:    NewHelpPane(),
 		input:       ta,
 		help:        help.New(),
 		httpClient:  &http.Client{Timeout: 15 * time.Second},
 	}
+	// The console's default params reference the newest task; the closure
+	// reads the (re)connected session dynamically.
+	app.consolePane.lastTaskID = func() string {
+		if app.session == nil {
+			return app.lastTaskID
+		}
+		if list := app.session.Registry().List(); len(list) > 0 {
+			return list[0].ID
+		}
+		return app.lastTaskID
+	}
+	return app
 }
 
 // SetPushPublicURL overrides the push webhook URL handed to agents
@@ -159,6 +177,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.refreshTranscript()
 
 	case tea.KeyMsg:
+		// The help overlay owns esc/? and the scroll keys while open; any
+		// other key closes it and keeps routing (so ctrl+k still opens the
+		// dashboard, ctrl+c still quits, typing still lands in the input).
+		if a.helpOpen {
+			if a.handleHelpKey(m) {
+				return a, nil
+			}
+			a.helpOpen = false
+		}
 		switch {
 		case keyMatches(m, keys.Quit):
 			return a, tea.Quit
@@ -176,6 +203,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case keyMatches(m, keys.PaneWire):
 			a.openWirePane()
+			return a, nil
+		case keyMatches(m, keys.PaneConsole):
+			a.openConsolePane()
 			return a, nil
 		case a.pane == paneSurface:
 			// The surface pane owns the keyboard (except the pane-switch
@@ -200,8 +230,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmd, _ := a.tasksPane.Update(m, a)
 			return a, cmd
+		case a.pane == paneConsole:
+			// The console owns the keyboard: esc leaves the pane, every
+			// other key feeds the method/params editors.
+			if m.String() == "esc" {
+				a.pane = paneTranscript
+				return a, nil
+			}
+			cmd, _ := a.consolePane.Update(m, a)
+			return a, cmd
 		case keyMatches(m, keys.Help):
-			a.showHelp()
+			a.toggleHelp()
+			return a, nil
 		case keyMatches(m, keys.Cancel):
 			return a, a.cancelActive()
 		case m.String() == "enter":
@@ -225,7 +265,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.spinner, cmd = a.spinner.Update(msg)
 			cmds = append(cmds, cmd)
 		}
+		if a.consolePane.inflight {
+			var cmd tea.Cmd
+			a.consolePane.spinner, cmd = a.consolePane.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
+
+	case consoleResultMsg:
+		a.consolePane.applyResult(m)
+		return a, nil
 
 	case connectResultMsg:
 		cmd := a.handleConnectResult(m)
@@ -330,6 +379,9 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 			a.pane = paneTranscript
 		}
 	}
+	// The raw console targets whatever connection was resolved (even when
+	// no session object came back) and shares the wirelog transport.
+	a.consolePane.SetTarget(m.resolved.BaseURL, a.consoleHTTPClient(), m.resolved.Wire)
 	a.refreshTranscript()
 	return a.armListener()
 }
@@ -353,7 +405,7 @@ func (a *App) runCommand(line string) tea.Cmd {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "/help":
-		a.showHelp()
+		a.toggleHelp()
 
 	case "/quit", "/exit":
 		return tea.Quit
@@ -385,7 +437,8 @@ func (a *App) runCommand(line string) tea.Cmd {
 		a.cardPane.SetCard(nil)
 		a.surfacePane.Close()
 		a.tasksPane = NewTasksPane()
-		if a.pane == paneSurface || a.pane == paneTasks {
+		a.consolePane.Clear()
+		if a.pane == paneSurface || a.pane == paneTasks || a.pane == paneConsole {
 			a.pane = paneTranscript
 		}
 		a.addStatus("disconnected")
@@ -426,6 +479,9 @@ func (a *App) runCommand(line string) tea.Cmd {
 	case "/wire":
 		return a.cmdWire(args)
 
+	case "/console":
+		a.openConsolePane()
+
 	case "/task":
 		return a.cmdTask(args)
 
@@ -443,25 +499,6 @@ func (a *App) runCommand(line string) tea.Cmd {
 		a.refreshTranscript()
 	}
 	return nil
-}
-
-// showHelp prints the command reference.
-func (a *App) showHelp() {
-	for _, line := range []string{
-		"commands: /help /connect <url-or-name> /disconnect /agents /agent save|remove|default <name>",
-		"          /card /tasks /surface [id] /chat /clear /quit",
-		"chat:     /stream on|off · /task <id> · /cancel <id> · /history <id> [n]",
-		"push:     /push on|off — local webhook; every new task gets a config",
-		"          (remote agents need a tunnel: --push-public-url / A2A_TUI_PUSH_URL)",
-		"debug:    /wire [on|off] — raw frame capture; ctrl+w or /wire shows the pane",
-		"keys:     enter send · esc cancel stream/back · ctrl+t transcript · ctrl+g card",
-		"          ctrl+k tasks · ctrl+w wire · ctrl+f a2ui surface · ? help",
-		"tasks:    up/down select · enter detail · c cancel · s subscribe · r refresh",
-		"wire:     c clear · up/down scroll (auto-follows new frames)",
-	} {
-		a.addStatus(line)
-	}
-	a.refreshTranscript()
 }
 
 // startConnect begins an async card resolution for ref (URL or saved
@@ -643,6 +680,12 @@ func (a *App) View() string {
 	case paneWire:
 		a.wirePane.Sync(a.wireLog.Snapshot())
 		body = a.wirePane.View(a.width-2, a.transcriptV.Height)
+	case paneConsole:
+		body = a.consolePane.View(a.width-2, a.transcriptV.Height)
+	}
+	// The help overlay draws over whatever main pane is displayed.
+	if a.helpOpen {
+		body = a.helpPane.View(a.width-2, a.transcriptV.Height)
 	}
 	status := a.statusLineView()
 	input := styleInputBox.Render(a.input.View())
@@ -702,7 +745,7 @@ func (a *App) statusLineView() string {
 func (a *App) helpView() string {
 	short := a.help.ShortHelpView([]key.Binding{
 		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.PaneSurface,
-		keys.PaneTasks, keys.PaneWire, keys.Help, keys.Quit,
+		keys.PaneTasks, keys.PaneWire, keys.PaneConsole, keys.Help, keys.Quit,
 	})
 	return styleHelp.Render(cell(short, max(20, a.width)))
 }

@@ -215,6 +215,7 @@ func (s *Session) SendRaw(ctx context.Context, msg *a2a.Message, opts SendOption
 				s.publish(AgentMessageEvent{Msg: r})
 			}
 		case *a2a.Task:
+			s.reg.Observe(r)
 			s.taskObserved(string(r.ID), key)
 			for _, e := range s.taskEvents(r, "send") {
 				s.publish(e)
