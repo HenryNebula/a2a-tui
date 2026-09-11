@@ -181,6 +181,10 @@ func (s *Session) Registry() *Registry { return s.reg }
 // only after Shutdown.
 func (s *Session) Events() <-chan Event { return s.events }
 
+// Done is closed when the session shuts down; event listeners select on it
+// so Shutdown cannot leave them blocked on Events forever.
+func (s *Session) Done() <-chan struct{} { return s.ctx.Done() }
+
 // Send fires a blocking SendMessage in the background and publishes the
 // result as events, ending with StreamDoneEvent{Op: "send"}.
 func (s *Session) Send(ctx context.Context, text string, opts SendOptions) {
@@ -193,6 +197,9 @@ func (s *Session) Send(ctx context.Context, text string, opts SendOptions) {
 // renderer capabilities (+ data-model metadata) are merged over the
 // message's own metadata.
 func (s *Session) SendRaw(ctx context.Context, msg *a2a.Message, opts SendOptions) {
+	if s.ctx.Err() != nil {
+		return // session already shut down; no pump may touch the events channel
+	}
 	req := s.requestFor(msg, opts)
 	key := "send:" + msg.ID
 	opCtx, cancel := s.register(ctx, key)
@@ -235,6 +242,9 @@ func (s *Session) SendStreaming(ctx context.Context, text string, opts SendOptio
 
 // SendRawStreaming is SendRaw over the streaming transport.
 func (s *Session) SendRawStreaming(ctx context.Context, msg *a2a.Message, opts SendOptions) {
+	if s.ctx.Err() != nil {
+		return // session already shut down; no pump may touch the events channel
+	}
 	req := s.requestFor(msg, opts)
 	key := "stream:" + msg.ID
 	opCtx, cancel := s.register(ctx, key)
@@ -246,6 +256,9 @@ func (s *Session) SendRawStreaming(ctx context.Context, msg *a2a.Message, opts S
 // Subscribe pumps SubscribeToTask for a task. Per the spec the agent
 // emits a full Task snapshot as the first event.
 func (s *Session) Subscribe(ctx context.Context, taskID string) {
+	if s.ctx.Err() != nil {
+		return // session already shut down; no pump may touch the events channel
+	}
 	key := "subscribe:" + taskID
 	opCtx, cancel := s.register(ctx, key)
 	s.bindTask(taskID, key)
@@ -552,6 +565,17 @@ func (s *Session) pump(ctx context.Context, key string, cancel context.CancelFun
 		if terminal {
 			break
 		}
+		// Interactive states end the agent's turn: it is parked waiting for
+		// the client (user input / credentials), so a clean stream close is
+		// normal termination, not a dropped connection. Reconnecting here
+		// would burn all attempts re-fetching a snapshot that cannot change
+		// until we reply. (On a real disconnect — iterErr != nil — we still
+		// resubscribe once; the resubscribe head confirms the state and the
+		// next clean end breaks there.)
+		if iterErr == nil && (lastState == a2a.TaskStateInputRequired ||
+			lastState == a2a.TaskStateAuthRequired) {
+			break
+		}
 		// The iterator ended without a terminal state. Without a task ID
 		// there is nothing to resubscribe to.
 		if taskID == "" {
@@ -712,13 +736,27 @@ func (s *Session) taskEvents(t *a2a.Task, op string) []Event {
 // merges the A2UI engine capabilities metadata (plus any sendDataModel
 // surfaces and the caller's extra metadata) over the message's own.
 func (s *Session) requestFor(msg *a2a.Message, opts SendOptions) *a2a.SendMessageRequest {
+	if msg.ID == "" {
+		// Hand-built messages may omit the ID; without one every operation
+		// registers under the same cancel key ("send:" / "stream:") and the
+		// first to finish cancels the others' contexts.
+		msg.ID = a2a.NewMessageID()
+	}
 	if opts.TaskID != "" {
 		msg.TaskID = a2a.TaskID(opts.TaskID)
 	}
 	if opts.ContextID != "" {
 		msg.ContextID = opts.ContextID
 	}
-	msg.Metadata = s.outboundMetadata(opts.Metadata)
+	// Merge, not replace: the message's own metadata keys survive unless
+	// the capabilities attachment or caller extras claim the same key.
+	meta := s.outboundMetadata(opts.Metadata)
+	for k, v := range msg.Metadata {
+		if _, taken := meta[k]; !taken {
+			meta[k] = v
+		}
+	}
+	msg.Metadata = meta
 
 	req := &a2a.SendMessageRequest{Message: msg}
 	if opts.HistoryLength != nil {

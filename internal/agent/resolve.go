@@ -79,7 +79,9 @@ type Resolved struct {
 // In Auto mode the v1.0 well-known path is tried first via the official
 // SDK resolver; on 404, parse failure, or a card whose interfaces do not
 // declare a 1.x protocol version, the legacy 0.3 well-known path is
-// tried. When both fail the combined error is returned.
+// tried. A card at the legacy path that is v1.0-shaped (it carries
+// supportedInterfaces) is rejected rather than spoken to as 0.3. When
+// both fail the combined error is returned.
 func Resolve(ctx context.Context, client *http.Client, baseOrURL string, mode ProtocolMode) (*Resolved, error) {
 	t, err := normalizeTarget(baseOrURL)
 	if err != nil {
@@ -242,6 +244,20 @@ func resolveV03(ctx context.Context, client *http.Client, t *target) (*Resolved,
 	var card CardV03
 	if err := json.Unmarshal(body, &card); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", t.cardV03, err)
+	}
+	// A v1.0 card has no top-level protocolVersion (it lives in each
+	// supportedInterfaces entry) but does carry a name, so it would pass
+	// the checks below and misdetect a 1.0 server as legacy. CardV03
+	// silently drops the v1-only supportedInterfaces field, so probe the
+	// raw JSON for the key: it is required in v1.0 and absent from 0.3.
+	var probe struct {
+		SupportedInterfaces json.RawMessage `json:"supportedInterfaces"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", t.cardV03, err)
+	}
+	if probe.SupportedInterfaces != nil {
+		return nil, fmt.Errorf("%s serves a v1.0 agent card at the legacy path", t.cardV03)
 	}
 	if card.Name == "" {
 		return nil, fmt.Errorf("%s is not a v0.3 agent card (no name)", t.cardV03)

@@ -1008,3 +1008,163 @@ func TestPushEndToEndThroughFixtureAgent(t *testing.T) {
 		t.Fatalf("push URL = %q", pushURL)
 	}
 }
+
+// TestStreamInteractiveStateEndsCleanly: a stream that parks the task in
+// input-required and closes cleanly must NOT trigger the resubscribe loop —
+// the agent's turn is over, it is waiting for the client.
+func TestStreamInteractiveStateEndsCleanly(t *testing.T) {
+	conn := &fakeConn{}
+	info := a2a.TaskInfo{TaskID: "t-i", ContextID: "c-i"}
+
+	conn.streamSeq = func(ctx context.Context, _ *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			if !yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateWorking, nil), nil) {
+				return
+			}
+			yield(a2a.NewStatusUpdateEvent(info, a2a.TaskStateInputRequired,
+				a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("name?"))), nil)
+		}
+	}
+	subscriptions := 0
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		conn.mu.Lock()
+		subscriptions++
+		conn.mu.Unlock()
+		return func(yield func(a2a.Event, error) bool) {}
+	}
+	s := fastReconnect(NewSession(conn), 20)
+	defer s.Shutdown()
+
+	s.SendStreaming(context.Background(), "hi", SendOptions{})
+
+	done, seen := drain(s, isStreamDone, 2*time.Second)
+	if done == nil {
+		t.Fatalf("no done; seen=%v", seen)
+	}
+	if done.(StreamDoneEvent).Err != nil {
+		t.Fatalf("done err = %v", done.(StreamDoneEvent).Err)
+	}
+	for _, ev := range seen {
+		if _, ok := ev.(ReconnectingEvent); ok {
+			t.Fatalf("input-required must not reconnect; seen=%v", seen)
+		}
+	}
+	if subscriptions != 0 {
+		t.Fatalf("subscribe calls = %d, want 0", subscriptions)
+	}
+}
+
+// TestSubscribeInteractiveTaskDoesNotLoop: subscribing to a task already
+// parked in auth-required yields its snapshot and ends — no reconnect loop.
+func TestSubscribeInteractiveTaskDoesNotLoop(t *testing.T) {
+	conn := &fakeConn{}
+	conn.subscribe = func(ctx context.Context, id string) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			snap := &a2a.Task{ID: a2a.TaskID(id), ContextID: "c-a",
+				Status: a2a.TaskStatus{State: a2a.TaskStateAuthRequired}}
+			yield(snap, nil)
+		}
+	}
+	s := fastReconnect(NewSession(conn), 20)
+	defer s.Shutdown()
+
+	s.Subscribe(context.Background(), "t-auth")
+
+	done, seen := drain(s, func(ev Event) bool {
+		d, ok := ev.(StreamDoneEvent)
+		return ok && d.Op == "subscribe"
+	}, 2*time.Second)
+	if done == nil {
+		t.Fatalf("no done; seen=%v", seen)
+	}
+	if done.(StreamDoneEvent).Err != nil {
+		t.Fatalf("done err = %v", done.(StreamDoneEvent).Err)
+	}
+	for _, ev := range seen {
+		if _, ok := ev.(ReconnectingEvent); ok {
+			t.Fatalf("auth-required must not reconnect; seen=%v", seen)
+		}
+	}
+}
+
+// TestSendRawMergesMessageMetadata: the message's own metadata keys survive
+// requestFor; the engine capabilities still take precedence on conflicts.
+func TestSendRawMergesMessageMetadata(t *testing.T) {
+	conn := &fakeConn{}
+	s := NewSession(conn)
+	defer s.Shutdown()
+
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))
+	msg.Metadata = map[string]any{
+		"custom":                   "kept",
+		"a2uiRendererCapabilities": "stale",
+		"a2uiRendererDataModel":    map[string]any{"stale": true},
+	}
+	s.SendRaw(context.Background(), msg, SendOptions{Metadata: map[string]any{"extra": 1}})
+
+	deadline := time.After(2 * time.Second)
+	for conn.lastSend() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("no send captured")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	meta := conn.lastSend().Message.Metadata
+	if meta["custom"] != "kept" {
+		t.Fatalf("custom key lost: %v", meta)
+	}
+	if meta["extra"] != 1 {
+		t.Fatalf("extra key lost: %v", meta)
+	}
+	caps, ok := meta["a2uiRendererCapabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities not a map: %v", meta["a2uiRendererCapabilities"])
+	}
+	if _, exists := caps["v1.0"]; !exists {
+		t.Fatalf("engine capabilities must win over the message's stale value: %v", caps)
+	}
+}
+
+// TestSendRawAssignsMissingMessageID: a hand-built message without an ID
+// gets one, so concurrent operations never share a cancel key.
+func TestSendRawAssignsMissingMessageID(t *testing.T) {
+	conn := &fakeConn{}
+	s := NewSession(conn)
+	defer s.Shutdown()
+
+	msg := &a2a.Message{Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}}
+	s.SendRaw(context.Background(), msg, SendOptions{})
+
+	deadline := time.After(2 * time.Second)
+	for conn.lastSend() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("no send captured")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if conn.lastSend().Message.ID == "" {
+		t.Fatal("empty message ID reached the wire")
+	}
+}
+
+// TestShutdownClosesDone: the Done channel must close on Shutdown so the
+// TUI's bridge listener (select on Done) is never left blocked forever.
+func TestShutdownClosesDone(t *testing.T) {
+	s := NewSession(&fakeConn{})
+	s.Shutdown()
+	select {
+	case <-s.Done():
+	default:
+		// Shutdown is synchronous through cancel(); give it a grace period
+		// only to absorb scheduler noise.
+		select {
+		case <-s.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("Done not closed after Shutdown")
+		}
+	}
+	// Idempotent: a second Shutdown must not panic on the channel.
+	s.Shutdown()
+}

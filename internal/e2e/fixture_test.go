@@ -368,3 +368,54 @@ func TestQuiescenceAfterShutdown(t *testing.T) {
 	// Idempotent.
 	s.Shutdown()
 }
+
+// TestStreamingInputRequiredEndsCleanly: when the agent parks a task in
+// input-required, the SSE stream closes by design — the session must end
+// the pump (StreamDone, no error) instead of grinding the 20-attempt
+// resubscribe loop against an agent that is waiting for the client.
+func TestStreamingInputRequiredEndsCleanly(t *testing.T) {
+	s := connectFixture(t)
+
+	s.SendStreaming(context.Background(), "inputreq", agent.SendOptions{})
+	match, _ := collectUntil(t, s, "input-required pill", func(ev agent.Event) bool {
+		u, ok := ev.(agent.TaskUpdateEvent)
+		return ok && u.State == a2a.TaskStateInputRequired
+	})
+	if match == nil {
+		return
+	}
+	taskID := match.(agent.TaskUpdateEvent).TaskID
+
+	done, seen := collectUntil(t, s, "stream done after input-required", func(ev agent.Event) bool {
+		return isDone(ev, "stream")
+	})
+	if done == nil {
+		return
+	}
+	if d := done.(agent.StreamDoneEvent); d.Err != nil {
+		t.Fatalf("stream done with error: %v", d.Err)
+	}
+	for _, ev := range seen {
+		if _, ok := ev.(agent.ReconnectingEvent); ok {
+			t.Fatalf("input-required must not trigger resubscribe; seen %s", summarize(seen))
+		}
+	}
+
+	// Quiescence: with the old bug the first reconnect attempt (plus its
+	// eventual "gave up reconnecting" error) arrived shortly after done.
+	quiet := time.NewTimer(1500 * time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case ev := <-s.Events():
+			if r, ok := ev.(agent.ReconnectingEvent); ok {
+				t.Fatalf("late resubscribe for task %s: %+v", taskID, r)
+			}
+			if e, ok := ev.(agent.ErrorEvent); ok {
+				t.Fatalf("late error after input-required: %v", e.Err)
+			}
+		case <-quiet.C:
+			return // clean: nothing further was published
+		}
+	}
+}

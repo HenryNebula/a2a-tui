@@ -52,6 +52,19 @@ const v03Card = `{
   "security": [{"key": []}]
 }`
 
+// v03CardNoProto is a genuine legacy 0.3 card that omits the optional
+// protocolVersion field; it must still resolve as 0.3.
+const v03CardNoProto = `{
+  "name": "NoProto Agent",
+  "description": "Legacy card that omits protocolVersion",
+  "url": "https://np.example.com/a2a",
+  "version": "0.9.0",
+  "capabilities": {"streaming": false, "pushNotifications": false},
+  "skills": [
+    {"name": "Ask", "description": "Answer things"}
+  ]
+}`
+
 // cardServer serves named well-known paths; a missing entry 404s.
 func cardServer(t *testing.T, files map[string]string) *httptest.Server {
 	t.Helper()
@@ -72,14 +85,15 @@ func testClient() *http.Client { return &http.Client{Timeout: 5 * time.Second} }
 
 func TestResolve(t *testing.T) {
 	tests := []struct {
-		name     string
-		files    map[string]string
-		input    func(srv string) string // build the resolve input
-		mode     ProtocolMode
-		wantWire string
-		wantBase string
-		wantName string
-		wantErr  string // non-empty: expect error containing this
+		name      string
+		files     map[string]string
+		input     func(srv string) string // build the resolve input
+		mode      ProtocolMode
+		wantWire  string
+		wantBase  string
+		wantName  string
+		wantProto string // Summary.ProtocolVersion; empty: skip check
+		wantErr   string // non-empty: expect error containing this
 	}{
 		{
 			name:     "v1 only, auto",
@@ -183,6 +197,48 @@ func TestResolve(t *testing.T) {
 			mode:     Auto,
 			wantWire: WireV03,
 		},
+		{
+			name: "0.3 card without protocolVersion still resolves",
+			files: map[string]string{
+				"/.well-known/agent.json": v03CardNoProto,
+			},
+			input:     func(srv string) string { return srv },
+			mode:      Auto,
+			wantWire:  WireV03,
+			wantBase:  "https://np.example.com/a2a",
+			wantName:  "NoProto Agent",
+			wantProto: "0.3.0", // summarizeV03 defaults the display version
+		},
+		{
+			name: "v1 card at legacy path is not detected as 0.3",
+			files: map[string]string{
+				"/.well-known/agent.json": v1Card, // v1-only server misconfigured to the legacy path
+			},
+			input:   func(srv string) string { return srv },
+			mode:    Auto,
+			wantErr: "v1.0 agent card at the legacy path",
+		},
+		{
+			name: "v1 card at both well-known paths, auto still v1",
+			files: map[string]string{
+				"/.well-known/agent-card.json": v1Card,
+				"/.well-known/agent.json":      v1Card, // server aliases both paths
+			},
+			input:    func(srv string) string { return srv },
+			mode:     Auto,
+			wantWire: WireV1,
+			wantBase: "https://rpc.example.com/api",
+		},
+		{
+			name: "force 0.3 against v1 card at legacy path errors clearly",
+			files: map[string]string{
+				"/.well-known/agent-card.json": v1Card,
+				"/.well-known/agent.json":      v1Card,
+			},
+			input:   func(srv string) string { return srv },
+			mode:    Force3,
+			wantErr: "v1.0 agent card at the legacy path",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -211,6 +267,9 @@ func TestResolve(t *testing.T) {
 			}
 			if tt.wantName != "" && res.Summary.Name != tt.wantName {
 				t.Errorf("Summary.Name = %q, want %q", res.Summary.Name, tt.wantName)
+			}
+			if tt.wantProto != "" && res.Summary.ProtocolVersion != tt.wantProto {
+				t.Errorf("Summary.ProtocolVersion = %q, want %q", res.Summary.ProtocolVersion, tt.wantProto)
 			}
 			// Card pointer exclusivity.
 			if res.Wire == WireV1 && (res.CardV1 == nil || res.CardV03 != nil) {
