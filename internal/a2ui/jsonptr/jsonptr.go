@@ -166,6 +166,14 @@ func setAt(cur any, tokens []string, val any, depth int) (any, error) {
 		if idx < 0 || idx > len(arr) {
 			return nil, fmt.Errorf("%w: index %d in array of %d", ErrIndexOutOfRange, idx, len(arr))
 		}
+		if len(rest) == 0 {
+			// The pointer targets the element itself: replace it in place
+			// rather than recursing (an empty token list has no tokens[0]).
+			out := make([]any, len(arr))
+			copy(out, arr)
+			out[idx] = val
+			return out, nil
+		}
 		child, err := setAt(arr[idx], rest, val, depth+1)
 		if err != nil {
 			return nil, err
@@ -274,9 +282,23 @@ func deleteAt(cur any, tokens []string, depth int) (any, bool, error) {
 		if idx < 0 || idx >= len(arr) {
 			return nil, false, nil
 		}
-		out := make([]any, 0, len(arr)-1)
-		out = append(out, arr[:idx]...)
-		out = append(out, arr[idx+1:]...)
+		if len(rest) == 0 {
+			out := make([]any, 0, len(arr)-1)
+			out = append(out, arr[:idx]...)
+			out = append(out, arr[idx+1:]...)
+			return out, true, nil
+		}
+		// Recurse into the element and rebuild the array copy around it.
+		child, had, err := deleteAt(arr[idx], rest, depth+1)
+		if err != nil {
+			return nil, false, err
+		}
+		if !had {
+			return arr, false, nil
+		}
+		out := make([]any, len(arr))
+		copy(out, arr)
+		out[idx] = child
 		return out, true, nil
 	}
 	obj, ok := cur.(map[string]any)

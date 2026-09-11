@@ -632,3 +632,347 @@ func TestNonPathBoundInputsAreReadOnly(t *testing.T) {
 		t.Fatalf("non-path inputs collected as focusables: %d", len(m.focusables))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #36: read-only input previews, hidden-tab focus, template rows
+// ---------------------------------------------------------------------------
+
+// TestViewFallbackForNonFocusableInputs covers input components that hold
+// no focusable editor: values not bound to a writable path (literals) and
+// later references of an already-collected component. They must render as
+// dimmed value previews, never as "unsupported component" placeholders —
+// and ordinary unfocused fields keep rendering through their editors.
+func TestViewFallbackForNonFocusableInputs(t *testing.T) {
+	m, _ := buildForm(t, "ro-view", false)
+	// Two bound TextFields: the unfocused one renders a value preview.
+	view := m.View(80, 0)
+	if !strings.Contains(view, "Name: ") || !strings.Contains(view, "Age: [") {
+		t.Fatalf("unfocused bound fields missing their previews:\n%s", view)
+	}
+	if strings.Contains(view, "unsupported component") {
+		t.Fatalf("bound inputs rendered as unsupported:\n%s", view)
+	}
+
+	eng := a2ui.NewEngine()
+	cs := &a2ui.CreateSurface{
+		SurfaceID: "ro2",
+		Components: []a2ui.Component{
+			column("root", "tf", "cb", "pick", "slide", "when", "dup", "btn", "btn-label",
+				"dup2"),
+			{ID: "tf", Component: "TextField", Props: &a2ui.TextFieldProps{
+				Label: lit("Literal"), Value: lit("fixed"),
+				Placeholder: lit("type here"),
+			}},
+			{ID: "cb", Component: "CheckBox", Props: &a2ui.CheckBoxProps{
+				Label: lit("Subscribed"), Value: lit(true),
+			}},
+			{ID: "pick", Component: "ChoicePicker", Props: &a2ui.ChoicePickerProps{
+				Label:   lit("Plan"),
+				Options: []a2ui.ChoiceOption{{Label: lit("Free"), Value: "free"}},
+				Value:   lit("free"),
+			}},
+			{ID: "slide", Component: "Slider", Props: &a2ui.SliderProps{
+				Label: lit("Volume"), Min: f64(0), Max: f64(10), Value: lit(5),
+			}},
+			{ID: "when", Component: "DateTimeInput", Props: &a2ui.DateTimeInputProps{
+				Label: lit("When"), Value: lit("2026-10-01T09:00"),
+			}},
+			{ID: "btn", Component: "Button", Props: &a2ui.ButtonProps{Child: "btn-label"}},
+			textComponent("btn-label", "Go", "body"),
+			// The same bound TextField referenced twice: the first reference
+			// is the editable one, the second a read-only preview.
+			{ID: "dup", Component: "TextField", Props: &a2ui.TextFieldProps{
+				Label: lit("Dup"), Value: bind("/dup"),
+			}},
+			{ID: "dup2", Component: "Column", Props: &a2ui.ColumnProps{
+				Children: a2ui.ChildList{IDs: []string{"dup"}},
+			}},
+		},
+		DataModel: map[string]any{"dup": "twice"},
+	}
+	raw, _ := json.Marshal(map[string]any{"version": a2ui.VersionV1, "createSurface": cs})
+	envs, _ := a2ui.DecodeEnvelopes(raw)
+	if errs := eng.Apply(context.Background(), envs); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	m2, err := New(eng.Surface("ro2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = m2.View(80, 0)
+	for _, want := range []string{
+		"Literal: [fixed]",
+		"[x] Subscribed",
+		"(•) Free",
+		"Volume: 5/10 [",
+		"When: [2026-10-01T09:00]",
+		"[ Go ]",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("read-only preview %q missing:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "unsupported component") {
+		t.Fatalf("read-only inputs rendered as unsupported:\n%s", view)
+	}
+	// The duplicate reference renders as a second (read-only) preview and
+	// does not add a competing focusable; the first occurrence holds focus.
+	if got := strings.Count(view, "Dup: "); got != 2 {
+		t.Fatalf("duplicate TextField rendered %d times, want 2:\n%s", got, view)
+	}
+	if got := strings.Count(view, "Dup: [twice]"); got != 1 {
+		t.Fatalf("read-only duplicate preview rendered %d times, want 1:\n%s", got, view)
+	}
+	if m2.FocusedID() != "dup" || len(m2.focusables) != 2 ||
+		m2.focusables[0].id != "dup" || m2.focusables[1].id != "btn" {
+		t.Fatalf("focusables = %+v", m2.focusables)
+	}
+}
+
+// TestTabsHiddenTabNotFocusable verifies that focusables are collected
+// only from the rendered (active) tab: Tab must not cycle into invisible
+// components and keystrokes must not mutate hidden fields.
+func TestTabsHiddenTabNotFocusable(t *testing.T) {
+	eng := a2ui.NewEngine()
+	cs := &a2ui.CreateSurface{
+		SurfaceID: "tabs",
+		Components: []a2ui.Component{
+			column("root", "tabs"),
+			{ID: "tabs", Component: "Tabs", Props: &a2ui.TabsProps{Tabs: []a2ui.TabSpec{
+				{Title: lit("General"), Child: "tab0"},
+				{Title: lit("Advanced"), Child: "tab1"},
+			}}},
+			column("tab0", "f0"),
+			column("tab1", "f1", "btn", "btn-label"),
+			{ID: "f0", Component: "TextField", Props: &a2ui.TextFieldProps{
+				Label: lit("Visible"), Value: bind("/visible"),
+			}},
+			{ID: "f1", Component: "TextField", Props: &a2ui.TextFieldProps{
+				Label: lit("Hidden"), Value: bind("/hidden"),
+			}},
+			{ID: "btn", Component: "Button", Props: &a2ui.ButtonProps{
+				Child:  "btn-label",
+				Action: &a2ui.ActionSpec{Event: &a2ui.ActionEvent{Name: "boom"}},
+			}},
+			textComponent("btn-label", "Boom", "body"),
+		},
+		DataModel: map[string]any{"visible": "v", "hidden": "h"},
+	}
+	raw, _ := json.Marshal(map[string]any{"version": a2ui.VersionV1, "createSurface": cs})
+	envs, _ := a2ui.DecodeEnvelopes(raw)
+	if errs := eng.Apply(context.Background(), envs); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	m, err := New(eng.Surface("tabs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.focusables) != 1 || m.focusables[0].id != "f0" {
+		t.Fatalf("focusables = %+v, want only the visible tab's f0", m.focusables)
+	}
+	// A full focus cycle (both directions) never leaves the visible tab,
+	// and typing never reaches the hidden field or button.
+	key(t, m, press(tea.KeyShiftTab))
+	if m.FocusedID() != "f0" {
+		t.Fatalf("shift+tab focus = %q, want f0", m.FocusedID())
+	}
+	key(t, m, press(tea.KeyTab))
+	key(t, m, runes("X"))
+	if v := get(t, m, "/visible"); v != "vX" {
+		t.Fatalf("/visible = %#v, want vX", v)
+	}
+	if v := get(t, m, "/hidden"); v != "h" {
+		t.Fatalf("hidden field mutated: /hidden = %#v", v)
+	}
+	view := m.View(80, 0)
+	if !strings.Contains(view, "[General] | Advanced") || !strings.Contains(view, "Visible") {
+		t.Fatalf("visible tab missing from view:\n%s", view)
+	}
+	if strings.Contains(view, "Hidden") || strings.Contains(view, "Boom") {
+		t.Fatalf("hidden tab leaked into view:\n%s", view)
+	}
+}
+
+// templateSurface builds a surface whose root column instantiates one row
+// (name TextField + del Button) per element of /items; the TextField binds
+// relatively to its row.
+func templateSurface(id string) *a2ui.CreateSurface {
+	return &a2ui.CreateSurface{
+		SurfaceID: id,
+		Components: []a2ui.Component{
+			{ID: "root", Component: "Column", Props: &a2ui.ColumnProps{
+				Children: a2ui.ChildList{TemplateID: "row", TemplatePath: "/items"},
+			}},
+			{ID: "row", Component: "Row", Props: &a2ui.RowProps{
+				Children: a2ui.ChildList{IDs: []string{"name-field", "del-btn"}},
+			}},
+			{ID: "name-field", Component: "TextField", Props: &a2ui.TextFieldProps{
+				Label: lit("Name"), Value: bind("name"),
+			}},
+			{ID: "del-btn", Component: "Button", Props: &a2ui.ButtonProps{
+				Child:  "del-label",
+				Action: &a2ui.ActionSpec{Event: &a2ui.ActionEvent{Name: "del"}},
+			}},
+			textComponent("del-label", "Del", "body"),
+		},
+		DataModel: map[string]any{"items": []any{
+			map[string]any{"name": "zero"},
+			map[string]any{"name": "one"},
+			map[string]any{"name": "two"},
+		}},
+	}
+}
+
+// TestTemplateRowsFocusAndWritePerRow verifies that every row instantiated
+// from a list template is focusable (not just row 0), that focus order
+// follows display order, and that edits write through to the edited row's
+// JSON Pointer path.
+func TestTemplateRowsFocusAndWritePerRow(t *testing.T) {
+	eng := a2ui.NewEngine()
+	raw, _ := json.Marshal(map[string]any{"version": a2ui.VersionV1, "createSurface": templateSurface("tpl")})
+	envs, _ := a2ui.DecodeEnvelopes(raw)
+	if errs := eng.Apply(context.Background(), envs); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	m, err := New(eng.Surface("tpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.focusables) != 6 {
+		t.Fatalf("focusables = %d, want 6 (two per row):\n%+v", len(m.focusables), m.focusables)
+	}
+	for i, want := range []string{
+		"name-field", "del-btn", // row 0
+		"name-field", "del-btn", // row 1
+		"name-field", "del-btn", // row 2
+	} {
+		if m.focusables[i].id != want {
+			t.Fatalf("focusable[%d] = %q, want %q", i, m.focusables[i].id, want)
+		}
+	}
+	view := m.View(80, 0)
+	for _, want := range []string{"zero", "one", "two"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("row value %q missing from view:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "unsupported component") {
+		t.Fatalf("template rows rendered as unsupported:\n%s", view)
+	}
+
+	// Edit row 1's name field: the write must land on /items/1/name only.
+	tab(t, m, 2) // row 1 name-field, seeded "one"
+	for i := 0; i < len("one"); i++ {
+		key(t, m, press(tea.KeyBackspace))
+	}
+	key(t, m, runes("uno"))
+	if v := get(t, m, "/items/1/name"); v != "uno" {
+		t.Fatalf("/items/1/name = %#v, want uno", v)
+	}
+	if v := get(t, m, "/items/0/name"); v != "zero" {
+		t.Fatalf("write leaked to row 0: /items/0/name = %#v", v)
+	}
+	if v := get(t, m, "/items/2/name"); v != "two" {
+		t.Fatalf("write leaked to row 2: /items/2/name = %#v", v)
+	}
+	if view := m.View(80, 0); !strings.Contains(view, "uno") {
+		t.Fatalf("edited row value missing from view:\n%s", view)
+	}
+
+	// Row 1's own button fires (all rows share the template's component ID).
+	tab(t, m, 1) // row 1 del-btn
+	out := key(t, m, press(tea.KeyEnter))
+	if out.Action == nil || out.Action.Name != "del" || out.Action.SourceComponentID != "del-btn" {
+		t.Fatalf("row 1 button: %+v", out.Action)
+	}
+}
+
+// TestTemplateRowsRefreshKeepsRowFocus verifies focus and editor carry
+// across a Refresh identify the row, not just the component ID.
+func TestTemplateRowsRefreshKeepsRowFocus(t *testing.T) {
+	eng := a2ui.NewEngine()
+	raw, _ := json.Marshal(map[string]any{"version": a2ui.VersionV1, "createSurface": templateSurface("tpl2")})
+	envs, _ := a2ui.DecodeEnvelopes(raw)
+	if errs := eng.Apply(context.Background(), envs); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	m, err := New(eng.Surface("tpl2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab(t, m, 2) // row 1 name-field
+	applyUpdateDataModel(t, eng, "tpl2", "/items/0/name", "changed")
+	if err := m.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if m.FocusedID() != "name-field" || m.focusables[m.focused].key.scope != "/items/1" {
+		t.Fatalf("focus after refresh = %+v, want row 1's name-field", m.focusables[m.focused].key)
+	}
+	key(t, m, press(tea.KeyBackspace)) // "one" -> "on"
+	if v := get(t, m, "/items/1/name"); v != "on" {
+		t.Fatalf("/items/1/name = %#v, want on", v)
+	}
+	if v := get(t, m, "/items/0/name"); v != "changed" {
+		t.Fatalf("/items/0/name = %#v, want changed (agent value)", v)
+	}
+}
+
+// TestNestedTemplateRowsFocusAndWrite exercises template rows nested inside
+// other template rows: the inner rows' relative bindings must compose to
+// the full absolute pointer (/groups/<g>/items/<i>/name).
+func TestNestedTemplateRowsFocusAndWrite(t *testing.T) {
+	eng := a2ui.NewEngine()
+	cs := &a2ui.CreateSurface{
+		SurfaceID: "nest",
+		Components: []a2ui.Component{
+			{ID: "root", Component: "Column", Props: &a2ui.ColumnProps{
+				Children: a2ui.ChildList{TemplateID: "group", TemplatePath: "/groups"},
+			}},
+			{ID: "group", Component: "Column", Props: &a2ui.ColumnProps{
+				Children: a2ui.ChildList{TemplateID: "item", TemplatePath: "items"},
+			}},
+			{ID: "item", Component: "TextField", Props: &a2ui.TextFieldProps{
+				Label: lit("Item"), Value: bind("name"),
+			}},
+		},
+		DataModel: map[string]any{"groups": []any{
+			map[string]any{"items": []any{
+				map[string]any{"name": "g0i0"}, map[string]any{"name": "g0i1"},
+			}},
+			map[string]any{"items": []any{
+				map[string]any{"name": "g1i0"}, map[string]any{"name": "g1i1"},
+			}},
+		}},
+	}
+	raw, _ := json.Marshal(map[string]any{"version": a2ui.VersionV1, "createSurface": cs})
+	envs, _ := a2ui.DecodeEnvelopes(raw)
+	if errs := eng.Apply(context.Background(), envs); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	m, err := New(eng.Surface("nest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.focusables) != 4 {
+		t.Fatalf("focusables = %d, want 4 (one per nested item)", len(m.focusables))
+	}
+	// Focus group 1, item 0 (third in display order) and clear its value.
+	tab(t, m, 2)
+	for i := 0; i < len("g1i0"); i++ {
+		key(t, m, press(tea.KeyBackspace))
+	}
+	key(t, m, runes("hi"))
+	if v := get(t, m, "/groups/1/items/0/name"); v != "hi" {
+		t.Fatalf("/groups/1/items/0/name = %#v, want hi", v)
+	}
+	untouched := map[string]string{
+		"/groups/0/items/0/name": "g0i0",
+		"/groups/0/items/1/name": "g0i1",
+		"/groups/1/items/1/name": "g1i1",
+	}
+	for path, want := range untouched {
+		if v := get(t, m, path); v != want {
+			t.Fatalf("write leaked: %s = %#v, want %q", path, v, want)
+		}
+	}
+}

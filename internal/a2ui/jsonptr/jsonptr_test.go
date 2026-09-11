@@ -135,6 +135,86 @@ func TestSetArrays(t *testing.T) {
 	}
 }
 
+// TestSetArrayElementDirect pins Set whose final token is an existing array
+// index: the element itself is replaced in place (recursing with an empty
+// token list would panic on tokens[0]).
+func TestSetArrayElementDirect(t *testing.T) {
+	// Root-level array.
+	arr := any([]any{"a", "b"})
+	root, err := Set(arr, "/0", "changed")
+	if err != nil {
+		t.Fatalf("Set /0: %v", err)
+	}
+	if !reflect.DeepEqual(root.([]any), []any{"changed", "b"}) {
+		t.Fatalf("Set /0 = %v, want [changed b]", root)
+	}
+	// Nested under an object key, non-scalar replacement value.
+	doc := any(map[string]any{"items": []any{float64(1), float64(2)}})
+	root, err = Set(doc, "/items/1", map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatalf("Set /items/1: %v", err)
+	}
+	if got, _ := Get(root, "/items/1"); !reflect.DeepEqual(got, map[string]any{"k": "v"}) {
+		t.Fatalf("/items/1 = %#v", got)
+	}
+	if got, _ := Get(root, "/items/0"); got != float64(1) {
+		t.Fatalf("sibling /items/0 = %v, want 1", got)
+	}
+	if l := len(root.(map[string]any)["items"].([]any)); l != 2 {
+		t.Fatalf("array length = %d, want 2", l)
+	}
+	// Original snapshot is untouched (spine copy).
+	if got, _ := Get(doc, "/items/1"); got != float64(2) {
+		t.Fatalf("original mutated: /items/1 = %v", got)
+	}
+	// Out-of-range replacement keeps the error semantics.
+	if _, err := Set(doc, "/items/5", 1); !errors.Is(err, ErrIndexOutOfRange) {
+		t.Fatalf("Set past end: err = %v, want ErrIndexOutOfRange", err)
+	}
+}
+
+// TestDeleteNestedInsideArray pins Delete of a path inside an array element:
+// the nested key is removed from the element, which stays in the array.
+func TestDeleteNestedInsideArray(t *testing.T) {
+	doc := any(map[string]any{
+		"users": []any{
+			map[string]any{"name": "Alice", "email": "a@example.com"},
+			map[string]any{"name": "Bob", "email": "b@example.com"},
+		},
+	})
+	root, ok, err := Delete(doc, "/users/0/email")
+	if err != nil || !ok {
+		t.Fatalf("Delete: ok=%v err=%v", ok, err)
+	}
+	if got, _ := Get(root, "/users/0/email"); got != nil {
+		t.Fatalf("/users/0/email = %v, want removed", got)
+	}
+	if got, _ := Get(root, "/users/0/name"); got != "Alice" {
+		t.Fatalf("/users/0/name = %v (element must remain)", got)
+	}
+	if got, _ := Get(root, "/users/1/email"); got != "b@example.com" {
+		t.Fatalf("/users/1/email = %v (sibling must be untouched)", got)
+	}
+	if l := len(root.(map[string]any)["users"].([]any)); l != 2 {
+		t.Fatalf("users length = %d, want 2", l)
+	}
+	// Original snapshot is untouched (spine copy).
+	if got, _ := Get(doc, "/users/0/email"); got != "a@example.com" {
+		t.Fatalf("original mutated: %v", got)
+	}
+	// Deleting the whole element itself still splices.
+	root, ok, err = Delete(doc, "/users/1")
+	if err != nil || !ok {
+		t.Fatalf("Delete element: ok=%v err=%v", ok, err)
+	}
+	if l := len(root.(map[string]any)["users"].([]any)); l != 1 {
+		t.Fatalf("users length after splice = %d, want 1", l)
+	}
+	if got, _ := Get(root, "/users/0/name"); got != "Alice" {
+		t.Fatalf("/users/0/name = %v after splice", got)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	doc := mustDoc(t)
 	root, ok, err := Delete(doc, "/a~1b")

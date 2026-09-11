@@ -585,11 +585,17 @@ func formatTR35(ts time.Time, pattern string) string {
 func tr35Token(ts time.Time, r rune, count int) string {
 	switch r {
 	case 'y', 'Y':
-		year := strconv.Itoa(ts.Year())
 		if count == 2 {
-			return year[len(year)-2:]
+			// Two-digit years via modulo, so single-digit and negative years
+			// (RFC 3339 allows "0009"; far-past epochs go below zero) render
+			// zero-padded instead of slicing a too-short string.
+			yy := ts.Year() % 100
+			if yy < 0 {
+				yy = -yy
+			}
+			return fmt.Sprintf("%02d", yy)
 		}
-		return year
+		return strconv.Itoa(ts.Year())
 	case 'M':
 		switch count {
 		case 1:

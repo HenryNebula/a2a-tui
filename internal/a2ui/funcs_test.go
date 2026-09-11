@@ -3,6 +3,7 @@ package a2ui
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func evalFn(t *testing.T, name string, args map[string]any) (any, error) {
@@ -195,6 +196,37 @@ func TestFormatDate(t *testing.T) {
 	}
 	if v, _ := evalFn(t, "formatDate", map[string]any{"value": 1768571405, "format": "yyyy"}); v != "2026" {
 		t.Errorf("epoch = %v", v)
+	}
+}
+
+// TestFormatDateSmallYears guards the yy token against years that do not
+// render as four digits: RFC 3339 four-digit years below 10 parse to
+// single-digit years, and far-past epoch values can go negative.
+func TestFormatDateSmallYears(t *testing.T) {
+	// End to end through the function: year 9 via a 0009 RFC 3339 value.
+	if v, err := evalFn(t, "formatDate", map[string]any{"value": "0009-01-16T14:30:05Z", "format": "yy"}); err != nil || v != "09" {
+		t.Errorf("yy for year 9 = %v, err %v; want 09", v, err)
+	}
+	// Normal years are unaffected.
+	if v, err := evalFn(t, "formatDate", map[string]any{"value": "2026-01-16T14:30:05Z", "format": "yy"}); err != nil || v != "26" {
+		t.Errorf("yy for 2026 = %v, err %v; want 26", v, err)
+	}
+	// Year zero and negative years (via far-past epoch seconds) must not
+	// panic and render as two digits.
+	ts := time.Date(9, time.January, 16, 14, 30, 5, 0, time.UTC)
+	if got := tr35Token(ts, 'y', 2); got != "09" {
+		t.Errorf("tr35Token year 9 yy = %q, want 09", got)
+	}
+	if got := tr35Token(ts, 'y', 1); got != "9" {
+		t.Errorf("tr35Token year 9 y = %q, want 9", got)
+	}
+	if got := tr35Token(ts, 'y', 4); got != "9" {
+		t.Errorf("tr35Token year 9 yyyy = %q, want 9", got)
+	}
+	if v, err := evalFn(t, "formatDate", map[string]any{"value": -62167219200, "format": "yy"}); err != nil {
+		t.Errorf("yy for negative year errored: %v", err)
+	} else if len(v.(string)) != 2 {
+		t.Errorf("yy for negative year = %q, want two digits", v)
 	}
 }
 

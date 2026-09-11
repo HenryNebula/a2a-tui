@@ -141,7 +141,7 @@ func (r *renderer) node(n *a2ui.Node) string {
 // ---------------------------------------------------------------------------
 
 func (r *renderer) text(p *a2ui.TextProps, ctx a2ui.EvalContext) string {
-	content := StripMarkdown(p.Text.EvalString(ctx))
+	content := StripMarkdown(clean(p.Text.EvalString(ctx)))
 	style := lipgloss.NewStyle()
 	switch p.Variant {
 	case "h1", "h2", "h3":
@@ -153,12 +153,12 @@ func (r *renderer) text(p *a2ui.TextProps, ctx a2ui.EvalContext) string {
 }
 
 func (r *renderer) media(kind string, url, desc a2ui.Dynamic, ctx a2ui.EvalContext) string {
-	u := url.EvalString(ctx)
+	u := clean(url.EvalString(ctx))
 	line := "[" + kind
 	if u != "" {
 		line += " " + u
 	}
-	if d := desc.EvalString(ctx); d != "" {
+	if d := clean(desc.EvalString(ctx)); d != "" {
 		line += " — " + d
 	}
 	return wrapPlain(line+"]", r.width)
@@ -169,9 +169,9 @@ func (r *renderer) icon(p *a2ui.IconProps, ctx a2ui.EvalContext) string {
 	case a2ui.IconKindEnum:
 		return Glyph(p.Name.Enum)
 	case a2ui.IconKindSVG:
-		return "◆ " + p.Name.SVGPath.EvalString(ctx)
+		return "◆ " + clean(p.Name.SVGPath.EvalString(ctx))
 	default:
-		name := p.Name.Dynamic.EvalString(ctx)
+		name := clean(p.Name.Dynamic.EvalString(ctx))
 		if name == "" {
 			return Glyph("")
 		}
@@ -290,7 +290,7 @@ func (r *renderer) card(n *a2ui.Node, _ a2ui.EvalContext) string {
 func (r *renderer) tabs(n *a2ui.Node, p *a2ui.TabsProps, ctx a2ui.EvalContext) string {
 	var titles []string
 	for i, t := range p.Tabs {
-		title := t.Title.EvalString(ctx)
+		title := clean(t.Title.EvalString(ctx))
 		if title == "" {
 			title = "tab"
 		}
@@ -356,20 +356,20 @@ func (r *renderer) button(n *a2ui.Node, p *a2ui.ButtonProps, ctx a2ui.EvalContex
 		line = line + " (disabled)"
 	}
 	if p.Action != nil && p.Action.Event != nil {
-		line += " → " + p.Action.Event.Name
+		line += " → " + clean(p.Action.Event.Name)
 	}
 	return wrapPlain(line, r.width)
 }
 
 func (r *renderer) textField(p *a2ui.TextFieldProps, ctx a2ui.EvalContext) string {
-	label := p.Label.EvalString(ctx)
-	value := p.Value.EvalString(ctx)
+	label := clean(p.Label.EvalString(ctx))
+	value := clean(p.Value.EvalString(ctx))
 	shown := value
 	if p.Variant == "obscured" && value != "" {
 		shown = strings.Repeat("•", len([]rune(value)))
 	}
 	if shown == "" {
-		if ph := p.Placeholder.EvalString(ctx); ph != "" {
+		if ph := clean(p.Placeholder.EvalString(ctx)); ph != "" {
 			shown = "(" + ph + ")"
 		} else {
 			shown = "(empty)"
@@ -385,7 +385,7 @@ func (r *renderer) textField(p *a2ui.TextFieldProps, ctx a2ui.EvalContext) strin
 }
 
 func checkMessage(res a2ui.ValidationResult, rule a2ui.CheckRule) string {
-	return a2ui.CheckDisplayMessage(res, rule)
+	return clean(a2ui.CheckDisplayMessage(res, rule))
 }
 
 func (r *renderer) checkBox(p *a2ui.CheckBoxProps, ctx a2ui.EvalContext) string {
@@ -393,7 +393,7 @@ func (r *renderer) checkBox(p *a2ui.CheckBoxProps, ctx a2ui.EvalContext) string 
 	if p.Value.EvalBoolean(ctx) {
 		mark = "[x]"
 	}
-	line := mark + " " + p.Label.EvalString(ctx)
+	line := mark + " " + clean(p.Label.EvalString(ctx))
 	for _, rule := range p.Checks {
 		if res := a2ui.EvalCheck(rule, ctx); !res.Valid() {
 			line += "  ✗ " + checkMessage(res, rule)
@@ -412,7 +412,7 @@ func (r *renderer) choicePicker(p *a2ui.ChoicePickerProps, ctx a2ui.EvalContext)
 		markerOn, markerOff = "[x]", "[ ]"
 	}
 	var lines []string
-	if label := p.Label.EvalString(ctx); label != "" {
+	if label := clean(p.Label.EvalString(ctx)); label != "" {
 		lines = append(lines, label+":")
 	}
 	for _, opt := range p.Options {
@@ -420,7 +420,7 @@ func (r *renderer) choicePicker(p *a2ui.ChoicePickerProps, ctx a2ui.EvalContext)
 		if selected[opt.Value] {
 			marker = markerOn
 		}
-		lines = append(lines, "  "+marker+" "+opt.Label.EvalString(ctx))
+		lines = append(lines, "  "+marker+" "+clean(opt.Label.EvalString(ctx)))
 	}
 	if len(lines) == 0 {
 		return ""
@@ -429,7 +429,7 @@ func (r *renderer) choicePicker(p *a2ui.ChoicePickerProps, ctx a2ui.EvalContext)
 }
 
 func (r *renderer) slider(p *a2ui.SliderProps, ctx a2ui.EvalContext) string {
-	label := p.Label.EvalString(ctx)
+	label := clean(p.Label.EvalString(ctx))
 	value := p.Value.EvalNumber(ctx)
 	min, max := 0.0, 100.0
 	if p.Min != nil {
@@ -456,12 +456,12 @@ func (r *renderer) slider(p *a2ui.SliderProps, ctx a2ui.EvalContext) string {
 }
 
 func (r *renderer) dateTime(p *a2ui.DateTimeInputProps, ctx a2ui.EvalContext) string {
-	value := p.Value.EvalString(ctx)
+	value := clean(p.Value.EvalString(ctx))
 	if value == "" {
 		value = "(unset)"
 	}
 	line := value
-	if label := p.Label.EvalString(ctx); label != "" {
+	if label := clean(p.Label.EvalString(ctx)); label != "" {
 		line = label + ": " + line
 	}
 	return wrapPlain(line, r.width)
@@ -486,9 +486,9 @@ func (r *renderer) renderAt(n *a2ui.Node, w int) string {
 // formatUnsupported renders the placeholder box for unknown or unresolved
 // components, with a bounded JSON peek.
 func (r *renderer) formatUnsupported(title, rawJSON string, width int) string {
-	body := title
+	body := clean(title)
 	if rawJSON != "" {
-		peek := rawJSON
+		peek := clean(rawJSON)
 		if len(peek) > 120 {
 			peek = peek[:120] + "…"
 		}
@@ -582,13 +582,17 @@ func truncateCells(s string, width int) string {
 }
 
 // splitCells splits s at width display cells (first part without marker).
+// It guarantees forward progress: the returned head is non-empty for any
+// non-empty input, so a rune wider than the whole budget (e.g. a double-cell
+// CJK rune at width 1) is still consumed — callers looping until the rest
+// fits would spin forever otherwise.
 func splitCells(s string, width int) (string, string) {
 	runes := []rune(s)
 	var b strings.Builder
 	acc := 0
 	for i, rn := range runes {
 		w := lipgloss.Width(string(rn))
-		if acc+w > width {
+		if acc > 0 && acc+w > width {
 			return b.String(), string(runes[i:])
 		}
 		b.WriteRune(rn)

@@ -183,6 +183,29 @@ func TestDynamicRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDynamicUnmarshalEmpty guards UnmarshalJSON against empty and
+// whitespace-only bytes: the exported method must degrade to a literal nil
+// like the "null" case rather than panicking on trimmed[0]. (encoding/json
+// itself rejects such input before reaching the unmarshaler, but the method
+// is also called directly with raw sub-values.)
+func TestDynamicUnmarshalEmpty(t *testing.T) {
+	for _, raw := range []string{``, ` `, "\t\n\r "} {
+		var d Dynamic
+		if err := d.UnmarshalJSON([]byte(raw)); err != nil {
+			t.Errorf("UnmarshalJSON(%q): %v", raw, err)
+		}
+		if d.Kind != KindLiteral || d.Literal != nil || d.Path != "" || d.Call != nil {
+			t.Errorf("UnmarshalJSON(%q) = %+v, want zero literal-nil Dynamic", raw, d)
+		}
+	}
+	// The standard-library entry point errors out before calling the
+	// unmarshaler; it must never panic.
+	var d Dynamic
+	if err := json.Unmarshal([]byte("  "), &d); err == nil {
+		t.Error(`json.Unmarshal("  ") should report a syntax error`)
+	}
+}
+
 // TestEvalDepthGuard ensures nested expressions cannot recurse forever.
 func TestEvalDepthGuard(t *testing.T) {
 	ctx := testCtx()

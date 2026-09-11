@@ -10,8 +10,10 @@
 //
 // Concurrency: like the rest of the single-model Bubble Tea app, Update and
 // View run on the UI thread, the same thread chat.SplitMessage applies
-// engine envelopes on — so writes into Surface.DataModel here never race
-// with engine applies. Refresh re-materializes after the engine mutated
+// engine envelopes on. Data-model writes additionally go through
+// Surface.SetDataModelPath (and reads through Surface.DataModelAtPath), so
+// even an embedding that applies engine envelopes off-thread cannot data-
+// race with the widget. Refresh re-materializes after the engine mutated
 // the surface.
 package widget
 
@@ -26,7 +28,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/HenryNebula/a2a-tui/internal/a2ui"
-	"github.com/HenryNebula/a2a-tui/internal/a2ui/jsonptr"
 )
 
 // Interaction limits protecting against hostile surfaces.
@@ -51,11 +52,25 @@ const (
 	kindDateTime
 )
 
+// focusID is the focus/refresh identity of one interactive component
+// instance: the component ID plus the absolute JSON Pointer prefix of the
+// template row it was instantiated for (empty outside templates). Every
+// materialization of the same row yields the same focusID, while rows of a
+// list template (which all carry the template's component ID) stay
+// distinct.
+type focusID struct {
+	id    string
+	scope string
+}
+
 // focusable is one interactive component instance discovered in the
 // materialized tree, plus its editor state.
 type focusable struct {
-	// id is the component ID (focus and refresh identity).
+	// id is the component ID (reported outward; not unique across template
+	// rows).
 	id string
+	// key is the unique focus and refresh identity (see focusID).
+	key focusID
 	// kind selects the editing semantics.
 	kind compKind
 	// node is the materialized node snapshot the editor renders from.
@@ -145,16 +160,16 @@ func (m *Model) evalCtx() a2ui.EvalContext {
 }
 
 // rebuild materializes the tree and collects focusables. previous maps
-// component IDs to editor state to carry over (nil on first build).
-func (m *Model) rebuild(previous map[string]*focusable) error {
+// focus keys to editor state to carry over (nil on first build).
+func (m *Model) rebuild(previous map[focusID]*focusable) error {
 	root, err := m.surf.Materialize()
 	if err != nil {
 		return err
 	}
 	m.root = root
 	m.focusables = m.focusables[:0]
-	seen := map[string]bool{}
-	m.collect(root, seen, previous)
+	seen := map[focusID]bool{}
+	m.collect(root, "", seen, previous)
 	// Model-level dirty follows the surviving editors: adopted external
 	// values clear it, kept user edits preserve it.
 	m.dirty = false
@@ -184,55 +199,109 @@ func (m *Model) applyFocus() {
 	}
 }
 
-// collect walks the tree depth-first, creating focusables for interactive
-// components (first occurrence only — shared DAG subtrees would otherwise
-// produce competing editors for one component ID).
-func (m *Model) collect(n *a2ui.Node, seen map[string]bool, previous map[string]*focusable) {
+// collect walks the visible tree depth-first, creating focusables for
+// interactive components (first occurrence per focus key — shared DAG
+// subtrees would otherwise produce competing editors for one component
+// instance). scope is the absolute JSON Pointer prefix of the enclosing
+// template row ("" outside templates): it distinguishes the rows of a list
+// template and turns their relative bindings into writable absolute paths.
+func (m *Model) collect(n *a2ui.Node, scope string, seen map[focusID]bool, previous map[focusID]*focusable) {
 	if n == nil || n.Placeholder || n.Component == nil || len(m.focusables) >= maxFocusables {
 		return
 	}
-	if !seen[n.Component.ID] {
-		seen[n.Component.ID] = true
-		if f := m.newFocusable(n); f != nil {
-			if old, ok := previous[n.Component.ID]; ok {
+	key := focusID{id: n.Component.ID, scope: scope}
+	if !seen[key] {
+		seen[key] = true
+		if f := m.newFocusable(n, scope); f != nil {
+			if old, ok := previous[key]; ok {
 				f.adopt(old, m)
 			}
 			m.focusables = append(m.focusables, f)
 		}
 	}
+	switch props := n.Component.Props.(type) {
+	case *a2ui.TabsProps:
+		// The view renders only the active (first) tab (see viewRenderer),
+		// so focusables in the hidden tabs must not join the focus cycle —
+		// Tab would move focus into invisible components and edits would
+		// mutate hidden fields.
+		if len(n.Children) > 0 {
+			m.collect(n.Children[0], scope, seen, previous)
+		}
+		return
+	case *a2ui.RowProps:
+		m.collectChildren(n, &props.Children, scope, seen, previous)
+		return
+	case *a2ui.ColumnProps:
+		m.collectChildren(n, &props.Children, scope, seen, previous)
+		return
+	case *a2ui.ListProps:
+		m.collectChildren(n, &props.Children, scope, seen, previous)
+		return
+	}
 	for _, c := range n.Children {
-		m.collect(c, seen, previous)
+		m.collect(c, scope, seen, previous)
+	}
+}
+
+// collectChildren descends into a container's child list. Template rows
+// each get their own scope — the template list's absolute pointer plus the
+// row index, mirroring how Materialize instantiates and evaluates them —
+// so per-row focusables stay distinct and writes land in the right row.
+func (m *Model) collectChildren(n *a2ui.Node, cl *a2ui.ChildList, scope string, seen map[focusID]bool, previous map[focusID]*focusable) {
+	if !cl.IsTemplate() {
+		for _, c := range n.Children {
+			m.collect(c, scope, seen, previous)
+		}
+		return
+	}
+	// Resolve the template's own path the way expandTemplate does: absolute
+	// paths address the root model, relative ones the current row scope.
+	base := cl.TemplatePath
+	if !strings.HasPrefix(base, "/") {
+		if scope == "" {
+			base = "" // relative at root scope never resolves: rows stay read-only
+		} else {
+			base = scope + "/" + base
+		}
+	}
+	for _, c := range n.Children {
+		row := ""
+		if base != "" && c.Index != nil {
+			row = base + "/" + strconv.Itoa(*c.Index)
+		}
+		m.collect(c, row, seen, previous)
 	}
 }
 
 // newFocusable creates the focusable for one node, or nil when the
 // component is not an editable input (static components, or values not
-// bound to an absolute data-model path — relative bindings inside list
-// templates cannot be written back by pointer).
-func (m *Model) newFocusable(n *a2ui.Node) *focusable {
-	f := &focusable{id: n.Component.ID, node: n}
+// bound to a writable data-model path: literals, calls, and relative
+// bindings outside template rows).
+func (m *Model) newFocusable(n *a2ui.Node, scope string) *focusable {
+	f := &focusable{id: n.Component.ID, key: focusID{id: n.Component.ID, scope: scope}, node: n}
 	switch props := n.Component.Props.(type) {
 	case *a2ui.ButtonProps:
 		f.kind = kindButton
 	case *a2ui.TextFieldProps:
 		f.kind = kindTextField
-		f.path = absoluteBinding(props.Value)
+		f.path = bindingPath(props.Value, scope)
 		f.input = newEditor(m, n, props.Placeholder.EvalString(n.EvalContext(m.evalCtx())), props.Variant == "obscured")
 	case *a2ui.CheckBoxProps:
 		f.kind = kindCheckBox
-		f.path = absoluteBinding(props.Value)
+		f.path = bindingPath(props.Value, scope)
 	case *a2ui.ChoicePickerProps:
 		f.kind = kindChoicePicker
-		f.path = absoluteBinding(props.Value)
+		f.path = bindingPath(props.Value, scope)
 		if props.Filterable {
 			f.input = newEditor(m, n, "filter…", false)
 		}
 	case *a2ui.SliderProps:
 		f.kind = kindSlider
-		f.path = absoluteBinding(props.Value)
+		f.path = bindingPath(props.Value, scope)
 	case *a2ui.DateTimeInputProps:
 		f.kind = kindDateTime
-		f.path = absoluteBinding(props.Value)
+		f.path = bindingPath(props.Value, scope)
 		f.input = newEditor(m, n, dateTimePlaceholder(props.EnableDate, props.EnableTime), false)
 	default:
 		return nil
@@ -262,16 +331,22 @@ func newEditor(m *Model, n *a2ui.Node, placeholder string, obscured bool) textin
 	return ti
 }
 
-// absoluteBinding returns the absolute JSON Pointer of a value binding, or
-// "" for literals, calls and template-relative paths.
-func absoluteBinding(d a2ui.Dynamic) string {
-	if d.Kind != a2ui.KindPath {
+// bindingPath returns the absolute JSON Pointer a value binding writes to.
+// Absolute paths pass through; relative paths — legal only inside template
+// rows, where they address the row element — compose against the row's
+// scope prefix. Literals, calls, empty paths and scopeless relatives are
+// read-only and return "".
+func bindingPath(d a2ui.Dynamic, scope string) string {
+	if d.Kind != a2ui.KindPath || d.Path == "" {
 		return ""
 	}
-	if !strings.HasPrefix(d.Path, "/") {
+	if strings.HasPrefix(d.Path, "/") {
+		return d.Path
+	}
+	if scope == "" {
 		return ""
 	}
-	return d.Path
+	return scope + "/" + d.Path
 }
 
 // currentString evaluates a node's bound value as a display string.
@@ -335,12 +410,13 @@ func (f *focusable) adopt(old *focusable, m *Model) {
 	}
 }
 
-// boundValue reads the value at path from the surface data model.
+// boundValue reads the value at path from the surface data model (under
+// the surface's read lock).
 func boundValue(surf *a2ui.Surface, path string) any {
 	if path == "" {
 		return nil
 	}
-	v, _ := jsonptr.Get(surf.DataModel, path)
+	v, _ := surf.DataModelAtPath(path)
 	return v
 }
 
@@ -710,15 +786,20 @@ func (m *Model) version() string {
 
 // setValue writes val at the focusable's bound path (two-way binding) so
 // bound texts and the static renderer observe the edit immediately.
+//
+// Concurrency: the write goes through Surface.SetDataModelPath, the
+// exported locked write path, so it serializes with engine-side envelope
+// application and concurrent renderers reading snapshots. (The embedding
+// contract in the package doc — Update on the UI goroutine — remains the
+// primary ordering guarantee; the lock removes the data race for
+// embeddings that apply envelopes off-thread.)
 func (m *Model) setValue(f *focusable, val any) error {
 	if f.path == "" {
 		return nil
 	}
-	next, err := jsonptr.Set(m.surf.DataModel, f.path, val)
-	if err != nil {
+	if err := m.surf.SetDataModelPath(f.path, val); err != nil {
 		return fmt.Errorf("widget: bind %s: %w", f.path, err)
 	}
-	m.surf.DataModel = next
 	f.dirty = true
 	f.lastWritten = val
 	m.dirty = true
@@ -735,20 +816,22 @@ func (m *Model) setValue(f *focusable, val any) error {
 // values while the data model still holds the value the widget last wrote
 // (an external overwrite is adopted instead).
 func (m *Model) Refresh() error {
-	previous := make(map[string]*focusable, len(m.focusables))
-	focusedID := ""
+	previous := make(map[focusID]*focusable, len(m.focusables))
+	focusedKey := focusID{}
+	hadFocus := false
 	for i, f := range m.focusables {
-		previous[f.id] = f
+		previous[f.key] = f
 		if i == m.focused {
-			focusedID = f.id
+			focusedKey = f.key
+			hadFocus = true
 		}
 	}
 	if err := m.rebuild(previous); err != nil {
 		return err
 	}
-	if focusedID != "" {
+	if hadFocus {
 		for i, f := range m.focusables {
-			if f.id == focusedID {
+			if f.key == focusedKey {
 				m.focused = i
 				break
 			}

@@ -59,6 +59,31 @@ func NewSurface(id string) *Surface {
 	}
 }
 
+// SetDataModelPath applies one JSON-Pointer write to the data model under
+// the surface lock, storing the new root that jsonptr.Set's spine copy
+// produces. It is the locked write path for cross-package editors (the
+// interactive widget); engine-side updates keep going through the engine,
+// whose own lock serializes envelope application against these writes.
+func (s *Surface) SetDataModelPath(path string, val any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next, err := jsonptr.Set(s.DataModel, path, val)
+	if err != nil {
+		return err
+	}
+	s.DataModel = next
+	s.UpdatedAt = time.Now()
+	return nil
+}
+
+// DataModelAtPath reads the value at a JSON Pointer under the surface's
+// read lock (the locked counterpart of SetDataModelPath).
+func (s *Surface) DataModelAtPath(path string) (any, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return jsonptr.Get(s.DataModel, path)
+}
+
 // EvalContextFor builds the root-scope evaluation context for the surface.
 func (s *Surface) EvalContextFor(funcs *FunctionRegistry) EvalContext {
 	s.mu.RLock()

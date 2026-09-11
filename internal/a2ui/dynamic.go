@@ -61,7 +61,9 @@ type Dynamic struct {
 // UnmarshalJSON sniffs the wire shape of a dynamic value.
 func (d *Dynamic) UnmarshalJSON(data []byte) error {
 	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "null" {
+	// Empty input (only reachable via direct calls; encoding/json rejects it
+	// first) degrades to a literal nil, like the "null" case.
+	if trimmed == "" || trimmed == "null" {
 		d.Kind, d.Literal, d.Path, d.Call = KindLiteral, nil, "", nil
 		return nil
 	}

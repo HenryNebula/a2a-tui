@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -255,6 +256,118 @@ func TestIconGlyphsComplete(t *testing.T) {
 	for _, name := range []string{"check", "close", "mail", "warning", "star"} {
 		if Glyph(name) == "◦" {
 			t.Errorf("known icon %q mapped to fallback", name)
+		}
+	}
+}
+
+// TestSplitCellsProgress pins the forward-progress invariant of
+// splitCells: for any non-empty input the head must be non-empty, otherwise
+// wrapLine's over-long-word loop never terminates (issue #32).
+func TestSplitCellsProgress(t *testing.T) {
+	cases := []struct {
+		in    string
+		width int
+	}{
+		{"世界", 1},    // first rune alone exceeds width
+		{"世", 1},     // single wide rune
+		{"😀x", 1},    // wide emoji first
+		{"a世界", 2},   // wide rune at the boundary
+		{"hello", 3}, // plain narrow runes
+		{"世world", 3},
+	}
+	for _, tc := range cases {
+		head, tail := splitCells(tc.in, tc.width)
+		if head == "" {
+			t.Errorf("splitCells(%q, %d) returned empty head: no forward progress", tc.in, tc.width)
+		}
+		if head+tail != tc.in {
+			t.Errorf("splitCells(%q, %d) lost runes: head+tail = %q", tc.in, tc.width, head+tail)
+		}
+		if lipgloss.Width(head) > tc.width && len([]rune(head)) > 1 {
+			t.Errorf("splitCells(%q, %d) head %q wider than budget with more than one rune", tc.in, tc.width, head)
+		}
+	}
+}
+
+// TestRenderNarrowWidthWideRunes exercises the wrap path end-to-end at
+// width 1 with double-cell runes. The goroutine + timeout guard turns the
+// historical infinite loop into a test failure instead of an OOM hang.
+func TestRenderNarrowWidthWideRunes(t *testing.T) {
+	s := buildSurface(t, `[
+	 {"version":"v1.0","createSurface":{"surfaceId":"narrow","components":[
+	   {"id":"root","component":"Column","children":["txt","card"]},
+	   {"id":"txt","component":"Text","text":"世界"},
+	   {"id":"card","component":"Card","child":"card_txt"},
+	   {"id":"card_txt","component":"Text","text":"日本語"}
+	 ]}}
+	]`, "narrow")
+	for _, width := range []int{1, 2, 3} {
+		width := width
+		done := make(chan string, 1)
+		go func() { done <- Render(s, width) }()
+		select {
+		case out := <-done:
+			if out == "" {
+				t.Errorf("width %d: empty render", width)
+			}
+			assertNoLineTooWide(t, out, width)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("width %d: Render hung wrapping wide runes (splitCells made no forward progress)", width)
+		}
+	}
+}
+
+// TestRenderSanitizesUntrustedSequences checks that escape and control
+// sequences in agent-supplied dynamic strings never reach the output (issue
+// #32): OSC 52 clipboard writes, window title changes, cursor movement, BEL,
+// and other C0/C1 controls must be stripped while readable text survives.
+func TestRenderSanitizesUntrustedSequences(t *testing.T) {
+	// JSON escapes: \u001b is ESC, \u0007 is BEL, \u0008 is BS.
+	env := `[
+	 {"version":"v1.0","createSurface":{"surfaceId":"san","components":[
+	   {"id":"root","component":"Column","children":["txt","field","choice"]},
+	   {"id":"txt","component":"Text","text":"A\u001b]52;c;c2Vtb3g=\u001b\\B\u001b]0;pwned\u0007C\u001b[2AD\u001b[1;31mE\u0007"},
+	   {"id":"field","component":"TextField","label":"L\u001b[2Kx","value":"v\u001b[31mred","placeholder":"p\tq"},
+	   {"id":"choice","component":"ChoicePicker","label":"pick","options":[{"label":"o\u001b[?25lne","value":"a"}],"value":["a"]}
+	 ]}}
+	]`
+	s := buildSurface(t, env, "san")
+	out := Render(s, 80)
+	if strings.ContainsAny(out, "\x1b\x07\x08\x0b\x0c\x7f\u009f") {
+		t.Errorf("control bytes survived into the render:\n%q", out)
+	}
+	for _, want := range []string{"A", "B", "C", "D", "E", "red", "Lx", "one"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sanitized render lost readable text %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestCleanStripsEscapes unit-tests the sanitizer used at the
+// agent-string boundary.
+func TestCleanStripsEscapes(t *testing.T) {
+	cases := map[string]string{
+		"":                                "",
+		"plain":                           "plain",
+		"\x1b]52;c;c2Vtb3g=\x07clipboard": "clipboard",         // OSC 52, BEL-terminated
+		"\x1b]52;c;c2Vtb3g=\x1b\\clip":    "clip",              // OSC 52, ST-terminated
+		"\x1b]0;title\x1b\\tab":           "tab",               // window title
+		"\x1b[2A\x1b[100Dmove":            "move",              // cursor movement
+		"\x1b[1;31mred\x1b[0m":            "red",               // SGR
+		"carriage\r\nreturn":              "carriage\nreturn",  // CRLF normalized
+		"lone\rreturn":                    "lone\nreturn",      // CR normalized
+		"tab\there":                       "tab  here",         // tab expanded
+		"bel\x07x":                        "belx",              // BEL dropped
+		"del\x7fx":                        "delx",              // DEL dropped
+		"back\x08space":                   "backspace",         // BS dropped
+		"c1\x9bCSIx":                      "c1SIx",             // C1 CSI: strip eats 0x9b + next byte (same as widget/chat)
+		"keep\nnewlines":                  "keep\nnewlines",    // newlines preserved
+		"世界 ⟨emoji⟩ 😀":                    "世界 ⟨emoji⟩ 😀",      // unicode untouched
+		"trailing lone esc\x1b":           "trailing lone esc", // dangling ESC
+	}
+	for in, want := range cases {
+		if got := clean(in); got != want {
+			t.Errorf("clean(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

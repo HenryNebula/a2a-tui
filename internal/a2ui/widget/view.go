@@ -42,9 +42,9 @@ func (m *Model) View(width, height int) string {
 	if m.root == nil {
 		return styleDimW.Render("(surface has no root component yet)")
 	}
-	r := &viewRenderer{m: m, width: width, byID: map[string]*focusable{}}
+	r := &viewRenderer{m: m, width: width, byNode: make(map[*a2ui.Node]*focusable, len(m.focusables))}
 	for _, f := range m.focusables {
-		r.byID[f.id] = f
+		r.byNode[f.node] = f
 	}
 	out := r.node(m.root)
 	lines := strings.Split(out, "\n")
@@ -64,7 +64,10 @@ func (m *Model) View(width, height int) string {
 type viewRenderer struct {
 	m     *Model
 	width int
-	byID  map[string]*focusable
+	// byNode maps the materialized node each focusable was collected from;
+	// template rows instantiate distinct nodes, so this identifies the
+	// editable occurrence precisely.
+	byNode map[*a2ui.Node]*focusable
 }
 
 // node renders one tree node.
@@ -75,7 +78,7 @@ func (r *viewRenderer) node(n *a2ui.Node) string {
 	if n.Placeholder || n.Component == nil {
 		return styleDimW.Render("┄ unresolved " + clean(n.RefID))
 	}
-	if f, ok := r.byID[n.Component.ID]; ok && f.node == n {
+	if f, ok := r.byNode[n]; ok {
 		return r.focusable(f)
 	}
 	ctx := n.EvalContext(r.m.evalCtx())
@@ -161,6 +164,18 @@ func (r *viewRenderer) node(n *a2ui.Node) string {
 		return strings.Join(parts, "\n")
 	case *a2ui.UnknownProps:
 		return styleDimW.Render(ansi.Truncate(" unsupported component "+clean(n.Component.Component), r.width, "…"))
+	case *a2ui.ButtonProps:
+		return r.staticButton(n, props, ctx)
+	case *a2ui.TextFieldProps:
+		return r.staticTextField(props, ctx)
+	case *a2ui.CheckBoxProps:
+		return r.staticCheckBox(props, ctx)
+	case *a2ui.ChoicePickerProps:
+		return r.staticPicker(props, ctx)
+	case *a2ui.SliderProps:
+		return r.staticSlider(props, ctx)
+	case *a2ui.DateTimeInputProps:
+		return r.staticDateTime(props, ctx)
 	default:
 		return styleDimW.Render(ansi.Truncate(" unsupported component "+clean(n.Component.Component), r.width, "…"))
 	}
@@ -211,6 +226,149 @@ func (r *viewRenderer) at(n *a2ui.Node, w int) string {
 	out := r.node(n)
 	r.width = saved
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Read-only input previews
+// ---------------------------------------------------------------------------
+
+// readOnly dims one preview line: the value previews of inputs that hold
+// no focusable editor — read-only values (not bound to a writable path)
+// and later references of an already-collected component (shared DAG
+// subtrees) — mirroring the static renderer's display in the widget's
+// compact style.
+func readOnly(s string) string {
+	if s == "" {
+		return ""
+	}
+	return styleDisabled.Render(s)
+}
+
+// staticButton renders a non-editable Button as a dim preview; failing
+// checks mark it disabled like the focusable button does.
+func (r *viewRenderer) staticButton(n *a2ui.Node, props *a2ui.ButtonProps, ctx a2ui.EvalContext) string {
+	label := ""
+	if len(n.Children) > 0 {
+		label = strings.Join(strings.Split(r.node(n.Children[0]), "\n"), " ")
+	}
+	label = clean(strings.TrimSpace(label))
+	var line string
+	switch props.Variant {
+	case "primary":
+		line = "[[ " + label + " ]]"
+	case "borderless":
+		line = label
+	default:
+		line = "[ " + label + " ]"
+	}
+	disabled := false
+	for _, rule := range props.Checks {
+		if res := a2ui.EvalCheck(rule, ctx); !res.Valid() {
+			disabled = true
+			break
+		}
+	}
+	if disabled {
+		line += " (disabled)"
+	}
+	return joinPreview([]string{readOnly(line)}, r.checkHints(props.Checks, ctx))
+}
+
+// staticTextField renders a read-only TextField preview.
+func (r *viewRenderer) staticTextField(props *a2ui.TextFieldProps, ctx a2ui.EvalContext) string {
+	shown := clean(props.Value.EvalString(ctx))
+	switch {
+	case shown == "":
+		shown = "(" + firstNonEmptyStr(clean(props.Placeholder.EvalString(ctx)), "empty") + ")"
+	case props.Variant == "obscured":
+		shown = strings.Repeat("•", len([]rune(shown)))
+	}
+	return joinPreview([]string{readOnly(clean(props.Label.EvalString(ctx)) + ": [" + shown + "]")},
+		r.checkHints(props.Checks, ctx))
+}
+
+// staticCheckBox renders a read-only CheckBox preview.
+func (r *viewRenderer) staticCheckBox(props *a2ui.CheckBoxProps, ctx a2ui.EvalContext) string {
+	mark := "[ ]"
+	if props.Value.EvalBoolean(ctx) {
+		mark = "[x]"
+	}
+	return joinPreview([]string{readOnly(mark + " " + clean(props.Label.EvalString(ctx)))},
+		r.checkHints(props.Checks, ctx))
+}
+
+// staticPicker renders a read-only ChoicePicker preview: label plus the
+// options with their selection markers.
+func (r *viewRenderer) staticPicker(props *a2ui.ChoicePickerProps, ctx a2ui.EvalContext) string {
+	selected := map[string]bool{}
+	for _, v := range props.Value.EvalStringList(ctx) {
+		selected[v] = true
+	}
+	on, off := "(•)", "( )"
+	if props.Variant == "multipleSelection" {
+		on, off = "[x]", "[ ]"
+	}
+	var lines []string
+	if label := clean(props.Label.EvalString(ctx)); label != "" {
+		lines = append(lines, readOnly(label+":"))
+	}
+	for _, opt := range props.Options {
+		marker := off
+		if selected[opt.Value] {
+			marker = on
+		}
+		lines = append(lines, readOnly("  "+marker+" "+clean(opt.Label.EvalString(ctx))))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return joinPreview(lines, r.checkHints(props.Checks, ctx))
+}
+
+// staticSlider renders a read-only Slider preview with its bar.
+func (r *viewRenderer) staticSlider(props *a2ui.SliderProps, ctx a2ui.EvalContext) string {
+	label := clean(props.Label.EvalString(ctx))
+	value := props.Value.EvalNumber(ctx)
+	min, max := 0.0, 100.0
+	if props.Min != nil {
+		min = *props.Min
+	}
+	if props.Max != nil {
+		max = *props.Max
+	}
+	if max <= min {
+		max = min + 1
+	}
+	filled := int((value - min) / (max - min) * float64(sliderCells))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > sliderCells {
+		filled = sliderCells
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", sliderCells-filled)
+	line := fmt.Sprintf("%s: %s/%s [%s]", label,
+		a2ui.Stringify(value), a2ui.Stringify(max), bar)
+	return joinPreview([]string{readOnly(line)}, r.checkHints(props.Checks, ctx))
+}
+
+// staticDateTime renders a read-only DateTimeInput preview.
+func (r *viewRenderer) staticDateTime(props *a2ui.DateTimeInputProps, ctx a2ui.EvalContext) string {
+	shown := clean(props.Value.EvalString(ctx))
+	if shown == "" {
+		shown = "(" + dateTimePlaceholder(props.EnableDate, props.EnableTime) + ")"
+	}
+	label := clean(props.Label.EvalString(ctx))
+	if label != "" {
+		label += ": "
+	}
+	return joinPreview([]string{readOnly(label + "[" + shown + "]")},
+		r.checkHints(props.Checks, ctx))
+}
+
+// joinPreview joins dimmed preview lines with their (undimmed) check hints.
+func joinPreview(lines, hints []string) string {
+	return strings.Join(append(lines, hints...), "\n")
 }
 
 // ---------------------------------------------------------------------------
