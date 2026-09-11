@@ -7,18 +7,53 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/HenryNebula/a2a-tui/internal/agent"
+	"github.com/HenryNebula/a2a-tui/internal/config"
 	"github.com/HenryNebula/a2a-tui/internal/tui"
 )
 
 func main() {
-	var agentURL string
-	flag.StringVar(&agentURL, "agent", "", "A2A agent base URL (or saved agent name) to connect to at startup")
+	var agentRef, protoFlag string
+	flag.StringVar(&agentRef, "agent", "", "A2A agent base URL (or saved agent name) to connect to at startup")
+	flag.StringVar(&protoFlag, "protocol", "auto", `wire protocol: "1.0", "0.3" or "auto" (detect from the agent card)`)
 	flag.Parse()
 
-	if _, err := tea.NewProgram(tui.New(agentURL), tea.WithAltScreen()).Run(); err != nil {
+	mode, err := agent.ParseProtocolMode(protoFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "a2a-tui:", err)
+		os.Exit(2)
+	}
+
+	// A nil store (no usable user config dir) degrades saved-agent
+	// features gracefully inside the app.
+	store, _ := config.DefaultStore()
+
+	// --agent accepts a saved agent name too; its stored URL and
+	// protocol pin expand here. An explicit --protocol flag wins.
+	explicitProto := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "protocol" {
+			explicitProto = true
+		}
+	})
+	if agentRef != "" && !strings.Contains(agentRef, "://") {
+		if f, err := store.Load(); err == nil {
+			if ag, ok := f.Agent(agentRef); ok {
+				agentRef = ag.URL
+				if !explicitProto && ag.Protocol != "" {
+					if m, err := agent.ParseProtocolMode(ag.Protocol); err == nil {
+						mode = m
+					}
+				}
+			}
+		}
+	}
+
+	if _, err := tea.NewProgram(tui.New(agentRef, mode, store), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "a2a-tui:", err)
 		os.Exit(1)
 	}

@@ -8,15 +8,19 @@ import (
 // keyMap holds the application-wide bindings. Per-view bindings live with
 // their views; global keys are matched before routing.
 type keyMap struct {
-	Quit key.Binding
-	Help key.Binding
-	Send key.Binding
+	Quit           key.Binding
+	Help           key.Binding
+	Send           key.Binding
+	PaneTranscript key.Binding
+	PaneCard       key.Binding
 }
 
 var keys = keyMap{
-	Quit: key.NewBinding(key.WithKeys("ctrl+c", "ctrl+d"), key.WithHelp("ctrl+c", "quit")),
-	Help: key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-	Send: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+	Quit:           key.NewBinding(key.WithKeys("ctrl+c", "ctrl+d"), key.WithHelp("ctrl+c", "quit")),
+	Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	Send:           key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "transcript")),
+	PaneCard:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "card")),
 }
 
 // keyMatches reports whether msg presses the binding.

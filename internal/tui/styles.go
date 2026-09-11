@@ -15,6 +15,13 @@ var (
 	styleError    = lipgloss.NewStyle().Foreground(colorError)
 	styleHelp     = lipgloss.NewStyle().Foreground(colorDim)
 	styleInputBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), true).BorderForeground(colorDim).Padding(0, 1)
+
+	styleCardTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231"))
+	styleCardLabel  = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	styleCardValue  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	styleCardOK     = lipgloss.NewStyle().Foreground(colorOK)
+	styleCardOff    = lipgloss.NewStyle().Foreground(colorDim)
+	styleCardHeader = lipgloss.NewStyle().Bold(true).Foreground(colorDim) // table headers
 )
 
 // styleState returns the style for the connection-state pill in the header.
