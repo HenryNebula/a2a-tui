@@ -356,16 +356,15 @@ func (b *TaskStateBlock) Render(width int) string {
 		styled = styleDim.Render(dot + " " + StateLabel(b.State))
 	}
 	line := styled + styleDim.Render(" · #"+ShortID(b.TaskID))
-	terminal := b.State.Terminal()
-	if terminal && b.Elapsed >= 100*time.Millisecond {
+	if b.State.Terminal() && b.Elapsed >= 100*time.Millisecond {
 		line += styleDim.Render(" · took " + shortDur(b.Elapsed))
 	}
-	// Terminal and interactive pills stay quiet — the final message (or
-	// the parked question, echoed on the status line) follows as its own
-	// block and used to repeat here verbatim. Live progress keeps its
-	// status text.
-	quiet := terminal || b.State == a2a.TaskStateInputRequired || b.State == a2a.TaskStateAuthRequired
-	if b.StatusText != "" && !quiet {
+	// Pills stay quiet — StatusText is deliberately not rendered: every
+	// state update also delivers its text as an agent message block,
+	// which this used to repeat verbatim ("sleeping 4s" twice in a row).
+	// Push-delivered updates are the exception: the ⇄ badge marks the
+	// delivery origin, which exists nowhere else in the transcript.
+	if strings.HasPrefix(b.StatusText, "⇄ push") {
 		line += styleDim.Render(" · " + truncateRunes(b.StatusText, 80))
 	}
 	return clipLine("  "+line, width)

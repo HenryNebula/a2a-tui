@@ -304,10 +304,11 @@ func TestTaskStateBlockStyling(t *testing.T) {
 	if strings.Contains(out, "need more info") {
 		t.Fatalf("interactive pill repeats status text: %q", out)
 	}
-	// Live progress keeps its status text.
+	// Live pills are quiet too: the status text arrives as its own agent
+	// message block, so echoing it here duplicated every update.
 	work := NewTaskStateBlock("t-9", a2a.TaskStateWorking, "sleeping")
-	if !strings.Contains(work.Render(80), "sleeping") {
-		t.Fatalf("working pill lost status text: %q", work.Render(80))
+	if strings.Contains(work.Render(80), "sleeping") {
+		t.Fatalf("working pill repeats status text: %q", work.Render(80))
 	}
 	// Terminal pills drop the status text (the final agent message
 	// follows as its own block) and show the elapsed time when known.
