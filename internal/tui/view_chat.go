@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	tea "github.com/charmbracelet/bubbletea"
@@ -75,17 +76,46 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 			statusText = strings.TrimSpace("⇄ push " + statusText)
 		}
 		block := chat.NewTaskStateBlock(e.TaskID, e.State, statusText)
+		if start, ok := a.taskStart[e.TaskID]; ok {
+			block.At = start
+			if e.State.Terminal() {
+				block.Elapsed = time.Since(start)
+				delete(a.taskStart, e.TaskID)
+			}
+		} else {
+			now := time.Now()
+			block.At = now
+			// A task that arrives already terminal (one-shot blocking
+			// reply) needs no duration and must not leak a start entry.
+			if !e.State.Terminal() {
+				a.taskStart[e.TaskID] = now
+			}
+		}
 		a.transcript.ReplaceByID(block.ID(), block)
+		if e.State.Terminal() {
+			// Land the finished pill after the turn's content: the
+			// state event arrives before the final message/artifact,
+			// and "completed" above the reply reads backwards.
+			a.transcript.MoveToEnd(block.ID())
+		}
 		switch {
 		case e.State == a2a.TaskStateInputRequired || e.State == a2a.TaskStateAuthRequired:
 			a.pending = &pendingInput{taskID: e.TaskID, contextID: e.ContextID}
-			a.addStatus("reply to task " + e.TaskID + " to continue (next message is attached automatically)")
+			a.setPlaceholder()
+			// The question rides the status line (right above the input
+			// it answers); the pill stays quiet so the text is not
+			// printed twice when the agent also sends it as a message.
+			q := strings.TrimSpace(e.StatusText)
+			if q == "" {
+				q = "reply to continue"
+			}
+			a.setStatus("input needed · " + truncateForStatus(q))
 		case e.State.Terminal():
 			if a.pending != nil && a.pending.taskID == e.TaskID {
 				a.pending = nil
 			}
 			if e.State == a2a.TaskStateCompleted {
-				a.setStatus("task " + e.TaskID + " completed")
+				a.setStatus("task #" + chat.ShortID(e.TaskID) + " completed")
 			}
 		}
 
@@ -95,7 +125,20 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 			if e.Msg.ContextID != "" {
 				a.lastContextID = e.Msg.ContextID
 			}
-			a.transcript.Append(chat.SplitMessage(e.Msg, a.session.Engine())...)
+			blocks := chat.SplitMessage(e.Msg, a.session.Engine())
+			for _, b := range blocks {
+				// Agent replies carry the connected agent's name so they
+				// read as turns, not anonymous log lines.
+				if ab, ok := b.(*chat.AgentTextBlock); ok {
+					ab.Name = a.agentName
+				}
+			}
+			a.transcript.Append(blocks...)
+			// A reply that lands after its task's terminal pill pulls
+			// the pill below it (turn content first, verdict after).
+			if id := string(e.Msg.TaskID); id != "" {
+				a.transcript.MoveToEnd("task-state:" + chat.SanitizeLine(id))
+			}
 		}
 
 	case agent.ArtifactEvent:
@@ -104,6 +147,7 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 				b.Append = true
 			}
 			a.transcript.ReplaceByID(b.ID(), b)
+			a.transcript.MoveToEnd("task-state:" + chat.SanitizeLine(e.TaskID))
 		}
 
 	case agent.StreamCompactedEvent:
@@ -149,6 +193,15 @@ func (a *App) isCancelErr(err error) bool {
 	return err != nil && (err == context.Canceled || strings.Contains(err.Error(), "context canceled"))
 }
 
+// truncateForStatus clips a status-line tail so the bar stays one line.
+func truncateForStatus(s string) string {
+	runes := []rune(s)
+	if len(runes) <= 60 {
+		return s
+	}
+	return string(runes[:59]) + "…"
+}
+
 // sendText submits a chat turn through the session (blocking or
 // streaming per the /stream toggle), attaching any pending input task.
 func (a *App) sendText(text string) tea.Cmd {
@@ -158,12 +211,17 @@ func (a *App) sendText(text string) tea.Cmd {
 		return nil
 	}
 	opts := agent.SendOptions{}
+	reply := ""
 	if a.pending != nil {
 		opts.TaskID = a.pending.taskID
 		opts.ContextID = a.pending.contextID
+		reply = a.pending.taskID
 		a.pending = nil
+		a.setPlaceholder()
 	}
-	a.transcript.Append(chat.NewUserBlock(text))
+	ub := chat.NewUserBlock(text)
+	ub.ReplyTo = reply
+	a.transcript.Append(ub)
 	a.refreshTranscript()
 	a.inflight++
 	if a.streamMode {
@@ -200,6 +258,16 @@ func (a *App) handleTaskResult(m taskResultMsg) {
 	}
 	a.lastTaskID = m.id
 	blocks := chat.BlocksForTask(m.task, a.engine())
+	for _, b := range blocks {
+		if ab, ok := b.(*chat.AgentTextBlock); ok {
+			ab.Name = a.agentName
+		}
+		if tb, ok := b.(*chat.TaskStateBlock); ok {
+			if start, ok := a.taskStart[tb.TaskID]; ok {
+				tb.At = start
+			}
+		}
+	}
 	// The state pill replaces any live pill for the same task; history
 	// and artifacts append.
 	for _, b := range blocks {
@@ -213,9 +281,12 @@ func (a *App) handleTaskResult(m taskResultMsg) {
 	a.tasksPane.SetDetail(m.task, a.engine())
 	switch m.op {
 	case "cancel":
-		a.setStatus("cancel requested for task " + m.id)
+		a.setStatus("cancel requested for task #" + chat.ShortID(m.id))
 	case "refresh":
-		a.setStatus("task " + m.id + " refreshed")
+		a.setStatus("task #" + chat.ShortID(m.id) + " refreshed")
+	case "task", "history":
+		// Replace the "fetching…" status instead of leaving it stale.
+		a.setStatus("task #" + chat.ShortID(m.id) + " loaded")
 	}
 	a.syncTasksPane()
 	a.syncSurfacePane()
@@ -350,7 +421,7 @@ func (a *App) cmdTask(args []string) tea.Cmd {
 	if id == "" {
 		return nil
 	}
-	a.setStatus("fetching task " + id + "…")
+	a.setStatus("fetching task #" + chat.ShortID(id) + "…")
 	return a.fetchTask("task", id, nil)
 }
 
@@ -377,7 +448,7 @@ func (a *App) cmdHistory(args []string) tea.Cmd {
 			return nil
 		}
 	}
-	a.setStatus("fetching history for " + id + "…")
+	a.setStatus("fetching history for #" + chat.ShortID(id) + "…")
 	return a.fetchTask("history", id, n)
 }
 
@@ -393,7 +464,7 @@ func (a *App) cmdCancel(args []string) tea.Cmd {
 		return nil
 	}
 	conn := a.session.Conn()
-	a.setStatus("canceling task " + id + "…")
+	a.setStatus("canceling task #" + chat.ShortID(id) + "…")
 	return func() tea.Msg {
 		task, err := conn.CancelTask(context.Background(), id)
 		return taskResultMsg{op: "cancel", id: id, task: task, err: err}

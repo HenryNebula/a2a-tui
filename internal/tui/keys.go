@@ -29,13 +29,13 @@ var keys = keyMap{
 	// (typing "?" must insert it into the chat box).
 	Help:           key.NewBinding(key.WithKeys("f1", "?"), key.WithHelp("f1", "help")),
 	Send:           key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
-	Cancel:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel stream")),
-	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "transcript")),
-	PaneCard:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "card")),
-	PaneSurface:    key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("ctrl+f", "a2ui surface")),
-	PaneTasks:      key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "tasks")),
-	PaneWire:       key.NewBinding(key.WithKeys("ctrl+w"), key.WithHelp("ctrl+w", "wire")),
-	PaneConsole:    key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "console")),
+	Cancel:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("^t", "chat")),
+	PaneCard:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("^g", "card")),
+	PaneSurface:    key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("^f", "a2ui")),
+	PaneTasks:      key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("^k", "tasks")),
+	PaneWire:       key.NewBinding(key.WithKeys("ctrl+w"), key.WithHelp("^w", "wire")),
+	PaneConsole:    key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("^e", "console")),
 	WireClear:      key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "wire: clear")),
 }
 

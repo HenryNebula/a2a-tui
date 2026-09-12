@@ -84,17 +84,22 @@ func TestFormActionRoundTrip(t *testing.T) {
 		t.Fatal("form surface never arrived")
 	}
 
-	// 3. Build the interactive widget and fill the name field.
+	// 3. Build the interactive widget and fill the name field. The editor
+	//    seeds from the fixture's data model, so typed runes append to
+	//    whatever /name held when the surface arrived.
 	m, err := widget.New(sess.Engine().Surface(surfID))
 	if err != nil {
 		t.Fatalf("widget: %v", err)
 	}
+	surf := sess.Engine().Surface(surfID)
+	seeded, _ := jsonptr.Get(surf.DataModel, "/name")
+	seed, _ := seeded.(string)
 	if _, _, err := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Grace")}); err != nil {
 		t.Fatalf("type: %v", err)
 	}
-	surf := sess.Engine().Surface(surfID)
-	if v, _ := jsonptr.Get(surf.DataModel, "/name"); v != "Grace" {
-		t.Fatalf("/name = %#v, want Grace (two-way binding failed)", v)
+	surf = sess.Engine().Surface(surfID)
+	if v, _ := jsonptr.Get(surf.DataModel, "/name"); v != seed+"Grace" {
+		t.Fatalf("/name = %#v, want %q (two-way binding failed)", v, seed+"Grace")
 	}
 
 	// 4. Focus the submit button (last focusable) and fire it.

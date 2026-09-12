@@ -28,6 +28,12 @@ import (
 
 const inputRows = 3
 
+// Input-box placeholders by connection state.
+const (
+	placeholderConnected    = "Message the agent…  (/help for commands)"
+	placeholderDisconnected = "Not connected — /connect <url-or-name> first  ·  /help for commands"
+)
+
 // connectTimeout bounds a single card resolution attempt.
 const connectTimeout = 10 * time.Second
 
@@ -83,15 +89,19 @@ type App struct {
 	listening     bool
 	pane          paneKind
 	transcriptV   viewport.Model
-	cardPane      CardPane
-	surfacePane   SurfacePane
-	tasksPane     TasksPane
-	wirePane      WirePane
-	consolePane   ConsolePane
-	helpPane      HelpPane
-	helpOpen      bool
-	input         textarea.Model
-	help          help.Model
+
+	// taskStart records when each task was first observed, so terminal
+	// pills can show how long the task took.
+	taskStart   map[string]time.Time
+	cardPane    CardPane
+	surfacePane SurfacePane
+	tasksPane   TasksPane
+	wirePane    WirePane
+	consolePane ConsolePane
+	helpPane    HelpPane
+	helpOpen    bool
+	input       textarea.Model
+	help        help.Model
 
 	// pushPublicURL overrides the advertised webhook URL (--push-public-url
 	// / A2A_TUI_PUSH_URL) for agents behind a tunnel.
@@ -108,14 +118,23 @@ type App struct {
 func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 	vp := viewport.New(0, 0)
 	tr := chat.NewTranscript()
-	tr.Append(chat.NewStatusBlock("a2a-tui — a terminal client for A2A agents."))
-	tr.Append(chat.NewStatusBlock("Connect with /connect <url-or-name>, view the card with /card."))
+	tr.Append(chat.NewStatusBlockID("welcome-1", "a2a-tui — a terminal client for A2A agents."))
+	tr.Append(chat.NewStatusBlockID("welcome-2", "Connect with /connect <url-or-name>, view the card with /card."))
 
 	ta := textarea.New()
-	ta.Placeholder = "Message the agent…  (/help for commands)"
-	ta.Prompt = "┃ "
+	ta.Placeholder = placeholderDisconnected
+	ta.Prompt = "❯ "
 	ta.CharLimit = 0
-	ta.SetHeight(inputRows)
+	ta.ShowLineNumbers = false
+	ta.SetHeight(1)
+	// Bubbles' default prompt/placeholder styles paint a black background;
+	// on any other terminal theme that shows up as a black box.
+	for _, st := range []*lipgloss.Style{&ta.FocusedStyle.Placeholder, &ta.BlurredStyle.Placeholder} {
+		*st = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	}
+	for _, st := range []*lipgloss.Style{&ta.FocusedStyle.Prompt, &ta.BlurredStyle.Prompt} {
+		*st = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	}
 	ta.Focus()
 
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
@@ -126,6 +145,7 @@ func New(agentRef string, mode agent.ProtocolMode, store *config.Store) *App {
 		store:       store,
 		connState:   "",
 		transcript:  tr,
+		taskStart:   map[string]time.Time{},
 		wireLog:     wirelog.New(wirelog.DefaultRingSize),
 		spinner:     sp,
 		transcriptV: vp,
@@ -185,6 +205,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			a.helpOpen = false
+		}
+		// The card pane has no text entry of its own; esc or q returns
+		// to the transcript instead of canceling a stream behind a
+		// hidden input.
+		if a.pane == paneCard && (m.String() == "esc" || m.String() == "q") {
+			a.pane = paneTranscript
+			return a, nil
 		}
 		switch {
 		case keyMatches(m, keys.Quit):
@@ -309,9 +336,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// With the input box hidden (keyboard-owning panes, help overlay) a
+	// stray keypress must not silently edit the invisible textarea.
+	if !a.inputVisible() && a.ready {
+		return a, tea.Batch(cmds...)
+	}
 	var cmd tea.Cmd
 	a.input, cmd = a.input.Update(msg)
 	cmds = append(cmds, cmd)
+	a.fitInputHeight()
 
 	a.transcriptV, cmd = a.transcriptV.Update(msg)
 	cmds = append(cmds, cmd)
@@ -327,6 +360,28 @@ func (a *App) cancelActive() tea.Cmd {
 		a.setStatus("cancelling…")
 	}
 	return nil
+}
+
+// setPlaceholder points the input placeholder at what the box can
+// actually do right now: a reply target while a task waits on input.
+func (a *App) setPlaceholder() {
+	switch {
+	case a.pending != nil:
+		a.input.Placeholder = "Reply to task #" + chat.ShortID(a.pending.taskID) + "…"
+	case a.connState == "connected":
+		a.input.Placeholder = placeholderConnected
+	default:
+		a.input.Placeholder = placeholderDisconnected
+	}
+}
+
+// fitInputHeight grows the input box with its content (paste can add
+// newlines) instead of always reserving every row: one line by default,
+// up to inputRows. The View pads below the footer so the total layout
+// height stays stable.
+func (a *App) fitInputHeight() {
+	lines := strings.Count(a.input.Value(), "\n") + 1
+	a.input.SetHeight(min(inputRows, max(1, lines)))
 }
 
 // Shutdown tears down the session (called by main after the program
@@ -348,6 +403,7 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 	if m.err != nil {
 		a.connState = "error"
 		a.conn, a.connURL = nil, ""
+		a.setPlaceholder()
 		a.addError("connect", m.err)
 		a.refreshTranscript()
 		return nil
@@ -358,6 +414,7 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 	a.protoVer = m.resolved.Wire
 	a.connState = "connected"
 	a.streamMode = m.resolved.Summary.Capabilities.Streaming
+	a.setPlaceholder()
 
 	stream := "✓"
 	if !m.resolved.Summary.Capabilities.Streaming {
@@ -367,6 +424,10 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 	if !m.resolved.Summary.Capabilities.PushNotifications {
 		push = "✗"
 	}
+	// The onboarding hints only apply while disconnected; drop them so
+	// the transcript opens with the connection line instead.
+	a.transcript.RemoveByID("welcome-1")
+	a.transcript.RemoveByID("welcome-2")
 	a.addStatus("connected to " + a.agentName + ": A2A " + m.resolved.Wire +
 		" · streaming " + stream + " · push " + push +
 		" · endpoint " + m.resolved.BaseURL)
@@ -450,6 +511,7 @@ func (a *App) runCommand(line string) tea.Cmd {
 		a.conn = nil
 		a.connURL = ""
 		a.agentName, a.protoVer, a.connState = "", "", ""
+		a.setPlaceholder()
 		a.pending, a.lastTaskID, a.lastContextID = nil, "", ""
 		a.inflight, a.statusText = 0, ""
 		a.cardPane.SetCard(nil)
@@ -670,15 +732,34 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// inputVisible reports whether the chat input box (with its status line
+// and footer) shares the screen with the main pane. Panes that own the
+// keyboard — surface, tasks, console, card — and the help overlay take
+// the whole area under the header instead; the wire pane keeps the input
+// because typing there falls through to it.
+func (a *App) inputVisible() bool {
+	if a.helpOpen {
+		return false
+	}
+	return a.pane == paneTranscript || a.pane == paneWire
+}
+
+// bodyHeight is the main-pane height for the current mode.
+func (a *App) bodyHeight() int {
+	if a.inputVisible() {
+		return max(1, a.height-(inputRows+2)-3) // header + status + footer
+	}
+	return max(1, a.height-1) // header only
+}
+
 // layout recomputes sub-view geometry after a resize.
 func (a *App) layout() {
 	if a.width == 0 || a.height == 0 {
 		return
 	}
-	inputHeight := inputRows + 2 // + borders
 	a.input.SetWidth(a.width - 4)
 	a.transcriptV.Width = a.width - 2
-	a.transcriptV.Height = a.height - inputHeight - 3 // header + status + help
+	a.transcriptV.Height = a.bodyHeight()
 }
 
 // View implements tea.Model.
@@ -687,62 +768,115 @@ func (a *App) View() string {
 		return "loading…"
 	}
 	header := a.headerView()
-	body := a.transcriptV.View()
-	switch a.pane {
-	case paneCard:
-		body = a.cardPane.View(a.width-2, a.transcriptV.Height)
-	case paneSurface:
-		body = a.surfacePane.View(a.width-2, a.transcriptV.Height)
-	case paneTasks:
-		body = a.tasksPane.View(a.width-2, a.transcriptV.Height)
-	case paneWire:
-		a.wirePane.Sync(a.wireLog.Snapshot())
-		body = a.wirePane.View(a.width-2, a.transcriptV.Height)
-	case paneConsole:
-		body = a.consolePane.View(a.width-2, a.transcriptV.Height)
+	if !a.inputVisible() {
+		// Panes that own the keyboard fill everything under the header.
+		bh := a.bodyHeight()
+		body := a.paneBody(bh)
+		// The help overlay draws over whatever main pane is displayed.
+		if a.helpOpen {
+			body = a.helpPane.View(a.width-2, bh)
+		}
+		return lipgloss.JoinVertical(lipgloss.Left, header, body)
 	}
-	// The help overlay draws over whatever main pane is displayed.
-	if a.helpOpen {
-		body = a.helpPane.View(a.width-2, a.transcriptV.Height)
-	}
+	// The transcript shares the screen with the input box: rows the
+	// (dynamically sized) input does not use go to the body, and the
+	// status row is always reserved so the layout never jumps.
+	inputH := a.input.Height() + 2         // + borders
+	bodyH := max(1, a.height-1-inputH-1-1) // header, status, footer
+	a.transcriptV.Height = bodyH
+	body := a.paneBody(bodyH)
 	status := a.statusLineView()
+	if status == "" {
+		status = " "
+	}
 	input := styleInputBox.Render(a.input.View())
 	footer := a.helpView()
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input, footer)
 }
 
+// paneBody renders the main-pane body at the given height.
+func (a *App) paneBody(height int) string {
+	switch a.pane {
+	case paneCard:
+		return a.cardPane.View(a.width-2, height)
+	case paneSurface:
+		return a.surfacePane.View(a.width-2, height)
+	case paneTasks:
+		return a.tasksPane.View(a.width-2, height)
+	case paneWire:
+		a.wirePane.Sync(a.wireLog.Snapshot())
+		return a.wirePane.View(a.width-2, height)
+	case paneConsole:
+		return a.consolePane.View(a.width-2, height)
+	default:
+		return a.transcriptV.View()
+	}
+}
+
 func (a *App) headerView() string {
-	left := "a2a-tui"
-	if a.agentName != "" {
-		left += " · " + a.agentName
-	}
-	if a.protoVer != "" {
-		left += " · A2A " + a.protoVer
-	}
-	if a.connState == "connected" {
-		if a.streamMode {
-			left += " · stream"
-		}
-		if a.session != nil && a.session.PushEnabled() {
-			left += " · push"
-		}
-		if a.wireLog.Enabled() {
-			left += " · wire"
-		}
-	}
+	// Pills from most to least important; the budget drops the tail so
+	// the state badge never gets pushed off-screen on narrow terminals.
 	state := a.connState
 	if state == "" {
 		state = "disconnected"
 	}
-	renderedLeft := styleHeader.Render(left)
-	right := styleState(state).Render(" " + state + " ")
-	gap := strings.Repeat(" ", max(1, a.width-lipgloss.Width(renderedLeft)-lipgloss.Width(right)))
-	return renderedLeft + gap + right
+	badge := state
+	if a.width < 76 {
+		badge = "●" // no room for the word
+	}
+	budget := max(12, a.width-lipgloss.Width(badge)-2)
+	parts := []string{"a2a-tui"}
+	if a.agentName != "" {
+		parts = append(parts, truncateMiddle(a.agentName, budget-10))
+	}
+	if a.protoVer != "" && a.width >= 80 {
+		parts = append(parts, "A2A "+a.protoVer)
+	}
+	if a.connState == "connected" && a.width >= 100 {
+		if a.streamMode {
+			parts = append(parts, "stream")
+		}
+		if a.session != nil && a.session.PushEnabled() {
+			parts = append(parts, "push")
+		}
+		if a.wireLog.Enabled() {
+			parts = append(parts, "wire")
+		}
+	}
+	left := strings.Join(parts, " · ")
+	for len(parts) > 1 && lipgloss.Width(left) > budget {
+		parts = parts[:len(parts)-1]
+		left = strings.Join(parts, " · ")
+	}
+	// One continuous top bar: a single subtle backdrop across the row
+	// (no seam between pill and bar), title bold left, state right.
+	bar := lipgloss.NewStyle().Background(lipgloss.Color("234"))
+	renderedLeft := bar.Bold(true).Foreground(lipgloss.Color("231")).Render(" " + left + " ")
+	right := styleState(state).Background(lipgloss.Color("234")).Render(" " + badge + " ")
+	gapLen := max(1, a.width-lipgloss.Width(renderedLeft)-lipgloss.Width(right))
+	return renderedLeft + bar.Render(strings.Repeat(" ", gapLen)) + right
 }
 
-// statusLineView renders the one-line status bar: spinner while work is
-// in flight, else the last status text.
+// truncateMiddle shortens s to at most max runes, keeping both ends and
+// marking the cut with an ellipsis ("" and short inputs pass through).
+func truncateMiddle(s string, maxLen int) string {
+	if maxLen <= 4 || lipgloss.Width(s) <= maxLen {
+		return s
+	}
+	runes := []rune(s)
+	keep := maxLen - 1 // "…" costs one cell
+	head := keep / 2
+	tail := keep - head
+	return string(runes[:head]) + "…" + string(runes[len(runes)-tail:])
+}
+
+// statusLineView renders the one-line status bar: a pending question
+// outranks progress (the user's move beats the agent's), then the
+// spinner while work is in flight, else the last status text.
 func (a *App) statusLineView() string {
+	if a.pending != nil {
+		return styleSurfacePrompt.Render(" input needed · #" + chat.ShortID(a.pending.taskID) + " — reply below")
+	}
 	if a.inflight > 0 {
 		mode := "sending"
 		if a.streamMode {
@@ -761,9 +895,23 @@ func (a *App) statusLineView() string {
 }
 
 func (a *App) helpView() string {
-	short := a.help.ShortHelpView([]key.Binding{
-		keys.Send, keys.Cancel, keys.PaneTranscript, keys.PaneCard, keys.PaneSurface,
-		keys.PaneTasks, keys.PaneWire, keys.PaneConsole, keys.Help, keys.Quit,
-	})
+	// The full bar must fit a 120-column terminal without truncation:
+	// esc only earns a slot while something is in flight, and the pane
+	// chords use the compact "^x" spelling. Very narrow terminals get the
+	// minimal set.
+	bindings := []key.Binding{keys.Send}
+	if a.pane != paneTranscript {
+		bindings = append(bindings, keys.PaneTranscript)
+	}
+	bindings = append(bindings, keys.PaneCard, keys.PaneSurface,
+		keys.PaneTasks, keys.PaneWire, keys.PaneConsole, keys.Help)
+	if a.inflight > 0 {
+		bindings = append(bindings[:1], append([]key.Binding{keys.Cancel}, bindings[1:]...)...)
+	}
+	if a.width < 100 {
+		bindings = []key.Binding{keys.Send, keys.Cancel, keys.Help, keys.Quit}
+	}
+	// The footer separator matches the header's middle dot.
+	short := strings.ReplaceAll(a.help.ShortHelpView(bindings), " • ", " · ")
 	return styleHelp.Render(cell(short, max(20, a.width)))
 }

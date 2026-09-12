@@ -18,7 +18,36 @@ const (
 	maxViewLines = 400
 	// sliderCells is the slider bar width in cells.
 	sliderCells = 10
+	// hintGap is the gap between a widget's line and a hint appended to
+	// its right.
+	hintGap = 2
+	// hintGutter is the width of the focus marker (and continuation
+	// prefix) focusable prepends to every line.
+	hintGutter = 2
+	// hintMargin keeps inline hints this far from the right edge.
+	hintMargin = 2
+	// labelCol is the fixed label column of stacked inputs: labels are
+	// left-aligned and padded to it so every input's brackets start at the
+	// same column; longer labels get a line of their own above the input.
+	labelCol = 18
+	// Bracket interior widths per input kind (both focus states): the
+	// embedded editor renders Width cells plus one cursor cell, and the
+	// unfocused interior is padded to the same width, so brackets never
+	// move on focus changes. Numbers and ISO 8601 date/times need far
+	// fewer cells than free text.
+	textBodyW   = inputWidth + 1 // shortText, longText, obscured
+	numberBodyW = 8
+	dateBodyW   = 22
 )
+
+// fieldBodyW returns the fixed bracket-interior width of a TextField
+// variant (the DateTimeInput editor uses dateBodyW).
+func fieldBodyW(variant string) int {
+	if variant == "number" {
+		return numberBodyW
+	}
+	return textBodyW
+}
 
 // View styles. The surface content is untrusted: every evaluated string is
 // sanitized (ANSI + control stripped) before styling, and lines are
@@ -26,8 +55,10 @@ const (
 var (
 	styleFocus    = lipgloss.NewStyle().Bold(true).Reverse(true)
 	styleFocused  = lipgloss.NewStyle().Bold(true)
+	styleAccent   = lipgloss.NewStyle().Foreground(lipgloss.Color("176"))
+	styleHandle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("176"))
 	styleHint     = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	styleDimW     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleDimW     = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	styleHeading  = lipgloss.NewStyle().Bold(true)
 	styleDisabled = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
@@ -76,7 +107,7 @@ func (r *viewRenderer) node(n *a2ui.Node) string {
 		return ""
 	}
 	if n.Placeholder || n.Component == nil {
-		return styleDimW.Render("┄ unresolved " + clean(n.RefID))
+		return gutterStatic(styleDimW.Render("┄ unresolved " + clean(n.RefID)))
 	}
 	if f, ok := r.byNode[n]; ok {
 		return r.focusable(f)
@@ -92,20 +123,20 @@ func (r *viewRenderer) node(n *a2ui.Node) string {
 		case "h4", "h5":
 			style = lipgloss.NewStyle().Underline(true)
 		}
-		return wrapStatic(style.Render(content), r.width)
+		return gutterStatic(wrapStatic(style.Render(content), maxIntW(1, r.width-hintGutter)))
 	case *a2ui.ImageProps:
-		return wrapStatic("[image "+clean(props.URL.EvalString(ctx))+"]", r.width)
+		return gutterStatic(wrapStatic("[image "+clean(props.URL.EvalString(ctx))+"]", maxIntW(1, r.width-hintGutter)))
 	case *a2ui.VideoProps:
-		return wrapStatic("[video "+clean(props.URL.EvalString(ctx))+"]", r.width)
+		return gutterStatic(wrapStatic("[video "+clean(props.URL.EvalString(ctx))+"]", maxIntW(1, r.width-hintGutter)))
 	case *a2ui.AudioPlayerProps:
-		return wrapStatic("[audio "+clean(props.URL.EvalString(ctx))+"]", r.width)
+		return gutterStatic(wrapStatic("[audio "+clean(props.URL.EvalString(ctx))+"]", maxIntW(1, r.width-hintGutter)))
 	case *a2ui.IconProps:
-		return r.icon(props, ctx)
+		return gutterStatic(r.icon(props, ctx))
 	case *a2ui.DividerProps:
 		if props.Axis == "vertical" {
-			return "│"
+			return gutterStatic("│")
 		}
-		return strings.Repeat("─", maxIntW(1, r.width))
+		return gutterStatic(strings.Repeat("─", maxIntW(1, r.width-hintGutter)))
 	case *a2ui.RowProps:
 		return r.row(n)
 	case *a2ui.ColumnProps:
@@ -163,7 +194,7 @@ func (r *viewRenderer) node(n *a2ui.Node) string {
 		}
 		return strings.Join(parts, "\n")
 	case *a2ui.UnknownProps:
-		return styleDimW.Render(ansi.Truncate(" unsupported component "+clean(n.Component.Component), r.width, "…"))
+		return gutterStatic(styleDimW.Render(ansi.Truncate(" unsupported component "+clean(n.Component.Component), maxIntW(1, r.width-hintGutter), "…")))
 	case *a2ui.ButtonProps:
 		return r.staticButton(n, props, ctx)
 	case *a2ui.TextFieldProps:
@@ -177,8 +208,21 @@ func (r *viewRenderer) node(n *a2ui.Node) string {
 	case *a2ui.DateTimeInputProps:
 		return r.staticDateTime(props, ctx)
 	default:
-		return styleDimW.Render(ansi.Truncate(" unsupported component "+clean(n.Component.Component), r.width, "…"))
+		return gutterStatic(styleDimW.Render(ansi.Truncate(" unsupported component "+clean(n.Component.Component), maxIntW(1, r.width-hintGutter), "…")))
 	}
+}
+
+// gutterStatic indents static (non-interactive) lines by the 2-column
+// focus gutter, so form text lines up with the interactive widgets below
+// it instead of hanging into the marker column.
+func gutterStatic(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = strings.Repeat(" ", hintGutter) + line
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // icon renders an Icon node.
@@ -210,13 +254,24 @@ func (r *viewRenderer) row(n *a2ui.Node) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
 }
 
-// stack renders children vertically.
+// stack renders children vertically, inserting one blank line before a
+// button (group) that follows non-button content, so actions are visually
+// separated from the fields above them.
 func (r *viewRenderer) stack(n *a2ui.Node) string {
 	var lines []string
-	for _, c := range n.Children {
+	for i, c := range n.Children {
+		if i > 0 && isButtonNode(c) && !isButtonNode(n.Children[i-1]) {
+			lines = append(lines, "")
+		}
 		lines = append(lines, r.node(c))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// isButtonNode reports whether a node renders a Button (the focusable
+// editor or the read-only preview).
+func isButtonNode(n *a2ui.Node) bool {
+	return n != nil && !n.Placeholder && n.Component != nil && n.Component.Component == "Button"
 }
 
 // at renders a child constrained to w columns.
@@ -271,20 +326,21 @@ func (r *viewRenderer) staticButton(n *a2ui.Node, props *a2ui.ButtonProps, ctx a
 	if disabled {
 		line += " (disabled)"
 	}
-	return joinPreview([]string{readOnly(line)}, r.checkHints(props.Checks, ctx))
+	return gutterStatic(joinPreview([]string{readOnly(line)}, r.checkHints(props.Checks, ctx, r.showChecks(nil))))
 }
 
-// staticTextField renders a read-only TextField preview.
+// staticTextField renders a read-only TextField preview: the value, the
+// declared placeholder, or an empty bracket pair (never a synthetic word).
 func (r *viewRenderer) staticTextField(props *a2ui.TextFieldProps, ctx a2ui.EvalContext) string {
 	shown := clean(props.Value.EvalString(ctx))
 	switch {
 	case shown == "":
-		shown = "(" + firstNonEmptyStr(clean(props.Placeholder.EvalString(ctx)), "empty") + ")"
+		shown = clean(props.Placeholder.EvalString(ctx))
 	case props.Variant == "obscured":
 		shown = strings.Repeat("•", len([]rune(shown)))
 	}
-	return joinPreview([]string{readOnly(clean(props.Label.EvalString(ctx)) + ": [" + shown + "]")},
-		r.checkHints(props.Checks, ctx))
+	return gutterStatic(joinPreview([]string{readOnly(clean(props.Label.EvalString(ctx)) + ": [" + shown + "]")},
+		r.checkHints(props.Checks, ctx, r.showChecks(nil))))
 }
 
 // staticCheckBox renders a read-only CheckBox preview.
@@ -293,8 +349,8 @@ func (r *viewRenderer) staticCheckBox(props *a2ui.CheckBoxProps, ctx a2ui.EvalCo
 	if props.Value.EvalBoolean(ctx) {
 		mark = "[x]"
 	}
-	return joinPreview([]string{readOnly(mark + " " + clean(props.Label.EvalString(ctx)))},
-		r.checkHints(props.Checks, ctx))
+	return gutterStatic(joinPreview([]string{readOnly(mark + " " + clean(props.Label.EvalString(ctx)))},
+		r.checkHints(props.Checks, ctx, r.showChecks(nil))))
 }
 
 // staticPicker renders a read-only ChoicePicker preview: label plus the
@@ -322,7 +378,7 @@ func (r *viewRenderer) staticPicker(props *a2ui.ChoicePickerProps, ctx a2ui.Eval
 	if len(lines) == 0 {
 		return ""
 	}
-	return joinPreview(lines, r.checkHints(props.Checks, ctx))
+	return gutterStatic(joinPreview(lines, r.checkHints(props.Checks, ctx, r.showChecks(nil))))
 }
 
 // staticSlider renders a read-only Slider preview with its bar.
@@ -349,21 +405,21 @@ func (r *viewRenderer) staticSlider(props *a2ui.SliderProps, ctx a2ui.EvalContex
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", sliderCells-filled)
 	line := fmt.Sprintf("%s: %s/%s [%s]", label,
 		a2ui.Stringify(value), a2ui.Stringify(max), bar)
-	return joinPreview([]string{readOnly(line)}, r.checkHints(props.Checks, ctx))
+	return gutterStatic(joinPreview([]string{readOnly(line)}, r.checkHints(props.Checks, ctx, r.showChecks(nil))))
 }
 
 // staticDateTime renders a read-only DateTimeInput preview.
 func (r *viewRenderer) staticDateTime(props *a2ui.DateTimeInputProps, ctx a2ui.EvalContext) string {
 	shown := clean(props.Value.EvalString(ctx))
 	if shown == "" {
-		shown = "(" + dateTimePlaceholder(props.EnableDate, props.EnableTime) + ")"
+		shown = dateTimePlaceholder(props.EnableDate, props.EnableTime)
 	}
 	label := clean(props.Label.EvalString(ctx))
 	if label != "" {
 		label += ": "
 	}
-	return joinPreview([]string{readOnly(label + "[" + shown + "]")},
-		r.checkHints(props.Checks, ctx))
+	return gutterStatic(joinPreview([]string{readOnly(label + "[" + shown + "]")},
+		r.checkHints(props.Checks, ctx, r.showChecks(nil))))
 }
 
 // joinPreview joins dimmed preview lines with their (undimmed) check hints.
@@ -376,13 +432,11 @@ func joinPreview(lines, hints []string) string {
 // ---------------------------------------------------------------------------
 
 // focusable renders one interactive component with its focus indicator and
-// validation hints.
+// validation hints. The focused widget is marked several ways: the accent
+// ▸ gutter marker, bold styling of its first line (label + value), and
+// accent brackets on the focused inputs, so focus stays unmistakable.
 func (r *viewRenderer) focusable(f *focusable) string {
 	focused := r.m.current() == f
-	marker := "  "
-	if focused {
-		marker = "▸ "
-	}
 	var lines []string
 	switch f.kind {
 	case kindButton:
@@ -401,7 +455,11 @@ func (r *viewRenderer) focusable(f *focusable) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	lines[0] = marker + lines[0]
+	if focused {
+		lines[0] = styleFocused.Render(styleAccent.Render("▸ ") + lines[0])
+	} else {
+		lines[0] = "  " + lines[0]
+	}
 	for i := 1; i < len(lines); i++ {
 		lines[i] = "  " + lines[i]
 	}
@@ -437,22 +495,33 @@ func (r *viewRenderer) buttonLines(f *focusable, focused bool) []string {
 	for _, rule := range props.Checks {
 		if res := a2ui.EvalCheck(rule, ctx); !res.Valid() {
 			disabled = true
-			hints = append(hints, styleHint.Render("✗ "+checkMessage(res, rule)))
+			if r.showChecks(f) {
+				hints = append(hints, styleHint.Render("✗ "+checkMessage(res, rule)))
+			}
 		}
 	}
-	if disabled {
+	switch {
+	case disabled:
 		line += styleDisabled.Render(" (disabled)")
-	} else if focused {
+	case focused:
 		line = styleFocus.Render(line)
-	} else if props.Variant == "primary" {
+	case props.Variant == "primary":
+		// Primary actions carry the accent color so they stand out from
+		// the plain-bold secondary buttons and the fields alike.
+		line = styleAccent.Render(line)
+	default:
+		// An unfocused button must still read as a button, not disabled
+		// text: bold it (focus adds reverse video on top).
 		line = styleFocused.Render(line)
 	}
-	out := []string{line}
-	return append(out, hints...)
+	return r.appendHints([]string{line}, hints)
 }
 
-// textFieldLines renders a TextField with its live editor. longText fields
-// are edited on one widened line (documented simplification).
+// textFieldLines renders a TextField with its live editor. Both focus
+// states keep the same enclosing brackets at the same fixed width; empty
+// fields show their declared placeholder dim, or a blank interior when the
+// agent declared none. longText fields are edited on one widened line
+// (documented simplification).
 func (r *viewRenderer) textFieldLines(f *focusable, focused bool) []string {
 	props, ok := f.node.Component.Props.(*a2ui.TextFieldProps)
 	if !ok {
@@ -460,36 +529,72 @@ func (r *viewRenderer) textFieldLines(f *focusable, focused bool) []string {
 	}
 	ctx := f.node.EvalContext(r.m.evalCtx())
 	label := clean(props.Label.EvalString(ctx))
+	bodyW := fieldBodyW(props.Variant)
 	var body string
 	if focused {
-		body = f.input.View()
+		body = fieldEditor(f.input.View(), bodyW)
 	} else {
 		shown := clean(f.input.Value())
-		if shown == "" {
-			shown = styleDimW.Render("(" + clean(firstNonEmptyStr(props.Placeholder.EvalString(ctx), "empty")) + ")")
-		} else if props.Variant == "obscured" {
+		switch {
+		case shown == "":
+			if ph := clean(props.Placeholder.EvalString(ctx)); ph != "" {
+				shown = styleDimW.Render(ph)
+			}
+		case props.Variant == "obscured":
 			shown = strings.Repeat("•", len([]rune(shown)))
 		}
-		body = "[" + shown + "]"
+		body = "[" + fieldInterior(shown, bodyW) + "]"
 	}
 	if props.Variant == "number" && focused {
 		body += styleDimW.Render(" 0-9")
 	}
-	line := label + ": " + body
 	if focused && props.Variant == "longText" {
-		line += styleDimW.Render("  (long text — one-line editor, wraps in previews)")
+		body += styleDimW.Render("  (single-line editor)")
 	}
-	out := []string{line}
+	out := labeledInput(label, body)
 	// Widget-local format validation for number variants.
 	if props.Variant == "number" {
 		if raw := strings.TrimSpace(f.input.Value()); raw != "" {
 			if _, err := parseNumber(raw); err != nil {
-				out = append(out, styleHint.Render("✗ must be a number"))
+				out = r.appendHint(out, styleHint.Render("✗ must be a number"))
 			}
 		}
 	}
-	out = append(out, r.checkHints(props.Checks, ctx)...)
-	return out
+	return r.appendHints(out, r.checkHints(props.Checks, ctx, r.showChecks(f)))
+}
+
+// labeledInput aligns a labeled input in the form stack: the label is
+// left-aligned and padded to labelCol so the input's brackets start at the
+// same column as every other input's; a label longer than the column gets
+// a line of its own above the input, which is indented by a small fixed
+// amount (2 spaces) so its bracket sits just under the label instead of
+// floating labelCol columns to the right.
+func labeledInput(label, body string) []string {
+	if label == "" {
+		return []string{body}
+	}
+	if w := ansi.StringWidth(label); w <= labelCol-2 {
+		return []string{label + ":" + strings.Repeat(" ", labelCol-1-w) + body}
+	}
+	return []string{label + ":", "  " + body}
+}
+
+// fieldEditor renders the focused editor's view inside accent brackets,
+// normalized to the fixed interior width (the editor renders its Width in
+// cells plus one cursor cell).
+func fieldEditor(view string, bodyW int) string {
+	return styleAccent.Render("[") + fieldInterior(view, bodyW) + styleAccent.Render("]")
+}
+
+// fieldInterior normalizes a field's bracket interior to the fixed cell
+// width: truncate longer content, right-pad shorter content, so brackets
+// never move between focus states or fields.
+func fieldInterior(shown string, bodyW int) string {
+	shown = ansi.Truncate(shown, bodyW, "")
+	if pad := bodyW - ansi.StringWidth(shown); pad > 0 {
+		return shown + strings.Repeat(" ", pad)
+	}
+	return shown
 }
 
 // checkBoxLines renders a CheckBox.
@@ -504,7 +609,7 @@ func (r *viewRenderer) checkBoxLines(f *focusable) []string {
 		mark = "[x]"
 	}
 	out := []string{mark + " " + clean(props.Label.EvalString(ctx))}
-	return append(out, r.checkHints(props.Checks, ctx)...)
+	return r.appendHints(out, r.checkHints(props.Checks, ctx, r.showChecks(f)))
 }
 
 // pickerLines renders a ChoicePicker: label, optional filter line, and the
@@ -544,7 +649,7 @@ func (r *viewRenderer) pickerLines(f *focusable, focused bool) []string {
 	if len(out) == 1 && len(f.visibleOptions(r.m)) == 0 {
 		out = append(out, styleDimW.Render("  (no matching options)"))
 	}
-	return append(out, r.checkHints(props.Checks, ctx)...)
+	return r.appendHints(out, r.checkHints(props.Checks, ctx, r.showChecks(f)))
 }
 
 // sliderLines renders a Slider with its bar and the stepping hint.
@@ -573,14 +678,33 @@ func (r *viewRenderer) sliderLines(f *focusable, focused bool) []string {
 	if filled > sliderCells {
 		filled = sliderCells
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", sliderCells-filled)
-	line := fmt.Sprintf("%s: %s/%s [%s]", label,
-		a2ui.Stringify(value), a2ui.Stringify(max), bar)
+	bar := sliderBar(filled)
+	if focused {
+		bar = styleAccent.Render("[") + bar + styleAccent.Render("]")
+	} else {
+		bar = "[" + bar + "]"
+	}
+	line := label + ": " + a2ui.Stringify(value) + "/" + a2ui.Stringify(max) + " " + bar
 	if focused {
 		line += styleDimW.Render("  ←/→ step · ↑/↓ 10%")
 	}
 	out := []string{line}
-	return append(out, r.checkHints(props.Checks, ctx)...)
+	return r.appendHints(out, r.checkHints(props.Checks, ctx, r.showChecks(f)))
+}
+
+// sliderBar renders the slider track as three visually distinct zones: the
+// filled cells in the accent color, the bold accent handle glyph sitting
+// on the track at the fill boundary (index 0 when empty, so it stays
+// visible at zero), and the dimmed unfilled cells — the affordance that
+// the value is movable, not a read-only progress bar. The handle uses an
+// explicit accent foreground without reverse video, so it reads as a thumb
+// on the track instead of a detached block.
+func sliderBar(filled int) string {
+	blocks := maxIntW(0, filled-1)
+	dim := sliderCells - blocks - 1
+	return styleAccent.Render(strings.Repeat("█", blocks)) +
+		styleHandle.Render("●") +
+		styleDimW.Render(strings.Repeat("░", dim))
 }
 
 // dateTimeLines renders a DateTimeInput with its live ISO 8601 editor and
@@ -592,47 +716,82 @@ func (r *viewRenderer) dateTimeLines(f *focusable, focused bool) []string {
 	}
 	ctx := f.node.EvalContext(r.m.evalCtx())
 	label := clean(props.Label.EvalString(ctx))
-	if label != "" {
-		label += ": "
-	}
 	var body string
 	if focused {
-		body = f.input.View()
+		body = fieldEditor(f.input.View(), dateBodyW)
 	} else {
 		shown := clean(f.input.Value())
 		if shown == "" {
-			shown = styleDimW.Render("(" + dateTimePlaceholder(props.EnableDate, props.EnableTime) + ")")
+			shown = styleDimW.Render(dateTimePlaceholder(props.EnableDate, props.EnableTime))
 		}
-		body = "[" + shown + "]"
+		body = "[" + fieldInterior(shown, dateBodyW) + "]"
 	}
-	out := []string{label + body + styleDimW.Render("  ISO 8601")}
+	body += styleDimW.Render("  ISO 8601")
+	out := labeledInput(label, body)
 	if raw := strings.TrimSpace(f.input.Value()); raw != "" {
 		if ts := parseDateTime(raw); ts == nil {
-			out = append(out, styleHint.Render("✗ invalid date/time (want "+dateTimePlaceholder(props.EnableDate, props.EnableTime)+")"))
+			out = r.appendHint(out, styleHint.Render("✗ invalid date/time (want "+dateTimePlaceholder(props.EnableDate, props.EnableTime)+")"))
 		} else {
 			if minRaw := strings.TrimSpace(props.Min.EvalString(ctx)); minRaw != "" {
 				if min := parseDateTime(minRaw); min != nil && ts.Before(*min) {
-					out = append(out, styleHint.Render("✗ must be after "+minRaw))
+					out = r.appendHint(out, styleHint.Render("✗ must be after "+minRaw))
 				}
 			}
 			if maxRaw := strings.TrimSpace(props.Max.EvalString(ctx)); maxRaw != "" {
 				if max := parseDateTime(maxRaw); max != nil && ts.After(*max) {
-					out = append(out, styleHint.Render("✗ must be before "+maxRaw))
+					out = r.appendHint(out, styleHint.Render("✗ must be before "+maxRaw))
 				}
 			}
 		}
 	}
-	return append(out, r.checkHints(props.Checks, ctx)...)
+	return r.appendHints(out, r.checkHints(props.Checks, ctx, r.showChecks(f)))
 }
 
 // checkHints renders the failing agent-defined checks of a component.
-func (r *viewRenderer) checkHints(checks []a2ui.CheckRule, ctx a2ui.EvalContext) []string {
+// Check-failure hints are suppressed on a pristine surface: they only show
+// (per showChecks) once the widget's value was touched or a button
+// activation was attempted.
+func (r *viewRenderer) checkHints(checks []a2ui.CheckRule, ctx a2ui.EvalContext, show bool) []string {
+	if !show {
+		return nil
+	}
 	var out []string
 	for _, rule := range checks {
 		if res := a2ui.EvalCheck(rule, ctx); !res.Valid() {
 			out = append(out, styleHint.Render("✗ "+checkMessage(res, rule)))
 		}
 	}
+	return out
+}
+
+// showChecks reports whether agent check hints may render for a widget
+// (nil for read-only previews): only after the user touched its value or
+// attempted a button activation — never on the initial render.
+func (r *viewRenderer) showChecks(f *focusable) bool {
+	return r.m.activateAttempted || (f != nil && f.touched)
+}
+
+// appendHints appends each hint through appendHint.
+func (r *viewRenderer) appendHints(out []string, hints []string) []string {
+	for _, h := range hints {
+		out = r.appendHint(out, h)
+	}
+	return out
+}
+
+// appendHint places a hint to the right of the widget's first line when it
+// fits within the width (two-space gap), so rows below do not jump when a
+// check flips while editing; otherwise it falls back to a line below.
+// Hints arrive pre-styled; the fit check counts printable cells only.
+func (r *viewRenderer) appendHint(out []string, hint string) []string {
+	if len(out) == 0 {
+		return append(out, hint)
+	}
+	fits := ansi.StringWidth(out[0])+hintGap+ansi.StringWidth(hint)+hintGutter <= r.width-hintMargin
+	if !fits {
+		return append(out, hint)
+	}
+	out[0] += strings.Repeat(" ", hintGap) + hint
 	return out
 }
 
@@ -678,15 +837,6 @@ func wrapStatic(s string, width int) string {
 		out = append(out, ansi.Hardwrap(line, width, true))
 	}
 	return strings.Join(out, "\n")
-}
-
-func firstNonEmptyStr(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func maxIntW(a, b int) int {

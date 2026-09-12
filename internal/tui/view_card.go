@@ -12,6 +12,16 @@ import (
 	"github.com/HenryNebula/a2a-tui/internal/agent"
 )
 
+// columnEmpty reports whether every row leaves column idx blank.
+func columnEmpty(rows [][]string, idx int) bool {
+	for _, row := range rows {
+		if idx < len(row) && row[idx] != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // CardPane renders a resolved agent card (agent.CardSummary) in its own
 // scrollable viewport. Content is pre-sanitized and size-capped by the
 // resolver; rendering truncates again to the pane width so no line can
@@ -20,6 +30,7 @@ type CardPane struct {
 	viewport viewport.Model
 	card     *agent.Resolved
 	w, h     int // last rendered geometry
+	docLines int // rendered document height (scroll-hint gating)
 }
 
 // NewCardPane returns an empty card pane.
@@ -43,9 +54,9 @@ func (p *CardPane) Update(msg tea.Msg) bool {
 		return false
 	}
 	switch k.String() {
-	case "up":
+	case "up", "k":
 		p.viewport.ScrollUp(1)
-	case "down":
+	case "down", "j":
 		p.viewport.ScrollDown(1)
 	case "pgup":
 		p.viewport.HalfPageUp()
@@ -68,11 +79,18 @@ func (p *CardPane) View(width, height int) string {
 	}
 	if width != p.w || height != p.h {
 		p.w, p.h = width, height
+		p.viewport.Height = max(1, height-1)
 		p.viewport.Width = width
-		p.viewport.Height = height
-		p.viewport.SetContent(p.render(width))
+		doc := p.render(width)
+		p.docLines = strings.Count(doc, "\n") + 1
+		p.viewport.SetContent(doc)
 	}
-	return p.viewport.View()
+	hint := "esc back"
+	if p.docLines > p.viewport.Height {
+		hint = "↑/↓ or j/k scroll · " + hint
+	}
+	return p.viewport.View() + "\n" +
+		styleDim.Render(cell(hint, width))
 }
 
 // render lays out the full card document. All card-derived strings pass
@@ -90,7 +108,11 @@ func (p *CardPane) render(width int) string {
 		meta = append(meta, cell(s.Provider, width))
 	}
 	if s.Version != "" {
-		meta = append(meta, "v"+cell(s.Version, width))
+		label := ""
+		if s.Provider == "" {
+			label = "version "
+		}
+		meta = append(meta, label+"v"+cell(s.Version, width))
 	}
 	if len(meta) > 0 {
 		b.WriteString(styleDim.Render(strings.Join(meta, " · ")) + "\n")
@@ -111,7 +133,7 @@ func (p *CardPane) render(width int) string {
 	if s.Capabilities.PushNotifications {
 		push = styleCardOK.Render("push ✓")
 	}
-	b.WriteString(stream + "  " + push + "\n")
+	b.WriteString(styleCardLabel.Render("capabilities ") + stream + "  " + push + "\n")
 
 	if s.Description != "" {
 		b.WriteString("\n" + styleCardValue.Render(ansi.Wrap(cell(s.Description, maxDescrip), max(20, width-2), "")) + "\n")
@@ -119,10 +141,24 @@ func (p *CardPane) render(width int) string {
 
 	b.WriteString("\n" + styleCardLabel.Render("interfaces") + "\n")
 	rows := make([][]string, 0, len(s.Interfaces))
+	anyTenant := false
 	for _, ifc := range s.Interfaces {
-		rows = append(rows, []string{ifc.URL, ifc.Binding, ifc.ProtocolVersion, ifc.Tenant})
+		if ifc.Tenant != "" {
+			anyTenant = true
+		}
 	}
-	b.WriteString(table([]string{"url", "binding", "version", "tenant"}, rows, width))
+	for _, ifc := range s.Interfaces {
+		if anyTenant {
+			rows = append(rows, []string{ifc.URL, ifc.Binding, ifc.ProtocolVersion, ifc.Tenant})
+		} else {
+			rows = append(rows, []string{ifc.URL, ifc.Binding, ifc.ProtocolVersion})
+		}
+	}
+	header := []string{"url", "binding", "version", "tenant"}
+	if !anyTenant {
+		header = header[:3]
+	}
+	b.WriteString(table(header, rows, width))
 
 	b.WriteString("\n" + styleCardLabel.Render("security schemes") + "\n")
 	if len(s.SecuritySchemes) == 0 {
@@ -197,6 +233,14 @@ func table(header []string, rows [][]string, width int) string {
 		}
 	}
 
+	// Cap middle columns so one long field (a tag list, a name) cannot
+	// crowd out the trailing description column.
+	for i := 1; i < cols-1; i++ {
+		if w[i] > 24 {
+			w[i] = 24
+		}
+	}
+
 	// Fit to width: shrink the widest non-id column until the row fits.
 	budget := width - 2 // leading indent
 	gapLen := lipgloss.Width(gap)
@@ -218,6 +262,15 @@ func table(header []string, rows [][]string, width int) string {
 			break
 		}
 		w[widest]--
+	}
+	// Leftover budget goes to the last column that carries content (an
+	// all-empty trailing column would just widen the void).
+	if spare := budget - total(); spare > 0 {
+		target := cols - 1
+		for target > 0 && columnEmpty(rows, target) {
+			target--
+		}
+		w[target] += spare
 	}
 
 	var b strings.Builder

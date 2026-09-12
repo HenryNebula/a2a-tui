@@ -146,13 +146,14 @@ func formSurface(tid a2a.TaskID) *a2ui.CreateSurface {
 				Text: fmtCall("Hello, ${/name}!"),
 			}},
 			{ID: "submit-btn", Component: "Button", Props: &a2ui.ButtonProps{
-				Child:  "submit-btn-label",
-				Action: &a2ui.ActionSpec{Event: &a2ui.ActionEvent{Name: "submit"}},
+				Child:   "submit-btn-label",
+				Variant: "primary",
+				Action:  &a2ui.ActionSpec{Event: &a2ui.ActionEvent{Name: "submit"}},
 			}},
 			textComponent("submit-btn-label", "Submit", "body"),
 		},
 		DataModel: map[string]any{
-			"name":      "",
+			"name":      "there",
 			"bio":       "",
 			"age":       nil,
 			"subscribe": true,

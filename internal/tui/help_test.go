@@ -21,7 +21,8 @@ func TestHelpOverlayTogglesAndRenders(t *testing.T) {
 		"a2a-tui · help",
 		"keys", "commands",
 		// key.Binding help data + the console binding added in M9
-		"ctrl+e", "ctrl+w", "ctrl+k",
+		// (pane chords use the compact "^x" footer spelling)
+		"^e", "^w", "^k",
 		// per-pane hints
 		"ctrl+l", "wire: clear",
 		// footer

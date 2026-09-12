@@ -92,6 +92,49 @@ func (t *Transcript) Len() int {
 	return len(t.entries)
 }
 
+// RemoveByID drops every block with the given logical ID (e.g. stale
+// onboarding hints once they no longer apply).
+func (t *Transcript) RemoveByID(id string) {
+	if id == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	kept := t.entries[:0]
+	for _, e := range t.entries {
+		if e.logical != id {
+			kept = append(kept, e)
+		}
+	}
+	t.entries = kept
+	t.seq++
+}
+
+// MoveToEnd relocates the (first) block with the given logical ID to the
+// end of the transcript. Task pills use this to land after the turn's
+// content: the state event usually arrives before the final message or
+// artifact, and a "completed" marker above the reply reads backwards.
+func (t *Transcript) MoveToEnd(id string) {
+	if id == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i, e := range t.entries {
+		if e.logical == id {
+			t.entries = append(t.entries[:i], t.entries[i+1:]...)
+			// Fresh, unique instance ID: instanceIDs key the render
+			// cache, so a reused one would render this block as
+			// whatever last took that ID (e.g. the message appended
+			// just before the move).
+			t.seq++
+			e.instanceID = t.seq
+			t.entries = append(t.entries, e)
+			return
+		}
+	}
+}
+
 // Render draws all blocks joined by blank-line separators, no wider than
 // width. height bounds the output line budget (older lines fall off).
 func (t *Transcript) Render(width, height int) string {
@@ -111,7 +154,8 @@ func (t *Transcript) Render(width, height int) string {
 		}
 		parts = append(parts, out)
 	}
-	joined := strings.Join(parts, "\n")
+	// Blank line between blocks: turns read as turns, not a packed log.
+	joined := strings.Join(parts, "\n\n")
 
 	lines := strings.Split(joined, "\n")
 	if maxLines := maxTranscriptLines; len(lines) > maxLines {

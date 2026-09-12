@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/HenryNebula/a2a-tui/internal/agent"
+	"github.com/HenryNebula/a2a-tui/internal/chat"
 )
 
 // seedTasks feeds task events through the app exactly as the session
@@ -48,13 +49,16 @@ func TestTasksPaneRendersRegistry(t *testing.T) {
 	}
 
 	view := a.View()
-	for _, want := range []string{"t-old", "t-live", "t-input", "completed", "working", "input-required", "needs input"} {
+	for _, want := range []string{
+		"#" + chat.ShortID("t-old"), "#" + chat.ShortID("t-live"), "#" + chat.ShortID("t-input"),
+		"completed", "working", "input-required", "needs input",
+	} {
 		if !strings.Contains(stripStyle(view), want) {
 			t.Errorf("dashboard missing %q\nview:\n%s", want, view)
 		}
 	}
 	// Registry order is newest-first: the input-required task leads.
-	if strings.Index(view, "t-input") > strings.Index(view, "t-old") {
+	if strings.Index(view, "#"+chat.ShortID("t-input")) > strings.Index(view, "#"+chat.ShortID("t-old")) {
 		t.Errorf("tasks not sorted by updatedAt desc:\n%s", view)
 	}
 	// No dashboard line may exceed the pane width.
@@ -181,7 +185,7 @@ func TestTasksPaneSubscribeAndRefreshKeys(t *testing.T) {
 	id := a.tasksPane.SelectedID()
 
 	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if !strings.Contains(rendered(a), "subscribing to task "+id) {
+	if !strings.Contains(rendered(a), "subscribing to task #"+chat.ShortID(id)) {
 		t.Fatalf("subscribe hint missing:\n%s", rendered(a))
 	}
 	// The subscribe op is live: CancelActive must see it.

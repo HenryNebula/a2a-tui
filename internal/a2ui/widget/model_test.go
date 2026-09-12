@@ -645,8 +645,10 @@ func TestNonPathBoundInputsAreReadOnly(t *testing.T) {
 func TestViewFallbackForNonFocusableInputs(t *testing.T) {
 	m, _ := buildForm(t, "ro-view", false)
 	// Two bound TextFields: the unfocused one renders a value preview.
+	// (Labels are padded into the label column, so the bracket does not
+	// directly follow a short label.)
 	view := m.View(80, 0)
-	if !strings.Contains(view, "Name: ") || !strings.Contains(view, "Age: [") {
+	if !strings.Contains(view, "Name: ") || !strings.Contains(view, "Age:") {
 		t.Fatalf("unfocused bound fields missing their previews:\n%s", view)
 	}
 	if strings.Contains(view, "unsupported component") {

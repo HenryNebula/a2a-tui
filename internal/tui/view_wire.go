@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/HenryNebula/a2a-tui/internal/chat"
 	"github.com/HenryNebula/a2a-tui/internal/wirelog"
@@ -41,8 +43,12 @@ type wireCacheKey struct {
 	lastByte int // cheap content fingerprint of the last body
 }
 
-// maxWireBodyBytes caps each pretty-printed body before indentation.
-const maxWireBodyBytes = 4 << 10 // 4KB
+// maxWireBodyBytes caps each pretty-printed body; maxRawBodyBytes caps
+// the raw bytes fed to the indenter (bound on work for huge captures).
+const (
+	maxWireBodyBytes = 4 << 10 // 4KB
+	maxRawBodyBytes  = 64 << 10
+)
 
 // NewWirePane returns an empty wire pane.
 func NewWirePane() WirePane {
@@ -100,7 +106,6 @@ func (p *WirePane) View(width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	footer := styleDim.Render(cell("ctrl+l clear · up/down scroll · frames: "+strconv.Itoa(len(p.visible())), width))
 	bodyHeight := max(1, height-1)
 
 	key := p.cacheKeyFor(width)
@@ -116,6 +121,14 @@ func (p *WirePane) View(width, height int) string {
 	if atBottom {
 		p.viewport.GotoBottom() // auto-follow like the transcript
 	}
+	hint := "ctrl+l clear · ↑/↓ pgup/pgdn scroll · frames: " + strconv.Itoa(len(p.visible()))
+	if last := p.lastStatus(); last != "" {
+		hint += " · last " + last
+	}
+	if n := strings.Count(p.cache, "\n") + 1; n > bodyHeight {
+		hint += " · " + strconv.Itoa(int(p.viewport.ScrollPercent())) + "%"
+	}
+	footer := styleDim.Render(cell(hint, width))
 	return p.viewport.View() + "\n" + footer
 }
 
@@ -158,7 +171,33 @@ func (p *WirePane) render(width int) string {
 	for _, e := range entries {
 		frames = append(frames, p.frame(e, width))
 	}
-	return strings.Join(frames, "\n"+styleDim.Render(strings.Repeat("·", max(8, min(width, 40))))+"\n")
+	sep := func(idx int) string {
+		label := fmt.Sprintf(" %d/%d ", idx+1, len(entries))
+		n := max(0, min(width, 60)-lipgloss.Width(label))
+		return styleDim.Render(strings.Repeat("·", n/2)) + styleDim.Render(label) + styleDim.Render(strings.Repeat("·", n-n/2))
+	}
+	parts := make([]string, 0, len(frames)*2)
+	for i, f := range frames {
+		parts = append(parts, f, sep(i))
+	}
+	return strings.Join(parts[:len(parts)-1], "\n")
+}
+
+// lastStatus renders the newest exchange's response summary for the
+// footer ("← 200") so the verdict is visible regardless of scroll.
+func (p *WirePane) lastStatus() string {
+	entries := p.visible()
+	if len(entries) == 0 {
+		return ""
+	}
+	e := entries[len(entries)-1]
+	if e.Err != "" {
+		return "✗ " + chat.ShortID(chat.SanitizeLine(e.Err))
+	}
+	if e.Status == 0 {
+		return ""
+	}
+	return "← " + strconv.Itoa(e.Status)
 }
 
 // frame renders one exchange: request head + body, response head + body.
@@ -177,7 +216,11 @@ func (p *WirePane) frame(e wirelog.Entry, width int) string {
 	if e.Status != 0 || len(e.RespBody) > 0 {
 		respHead := fmt.Sprintf("← %d %s · %s", e.Status,
 			chat.SanitizeLine(e.RespHeaders.Get("Content-Type")), byteLabel(len(e.RespBody), e.RespTrunc))
-		b.WriteString(styleCardValue.Render(cell(respHead, width)) + "\n")
+		statusStyle := styleCardOK.Bold(true)
+		if e.Status >= 400 || e.Status == 0 {
+			statusStyle = styleError.Bold(true)
+		}
+		b.WriteString("\n" + statusStyle.Render(cell(respHead, width)) + "\n")
 		if body := prettyBody(e.RespBody); body != "" {
 			b.WriteString(indentBody(body, width))
 		}
@@ -185,36 +228,122 @@ func (p *WirePane) frame(e wirelog.Entry, width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// prettyBody pretty-prints a JSON body, capping it first: truncated JSON
-// often fails to indent, in which case the raw (still capped) text shows.
+// prettyBody pretty-prints a JSON body, capping the OUTPUT at line
+// boundaries (indenting first and then cutting keeps the pretty form;
+// cutting the raw bytes first usually breaks the JSON). SSE bodies (a
+// whole event stream in one capture) are split into their events so each
+// data payload gets its own indentation instead of one clipped line per
+// event.
 func prettyBody(body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
-	truncated := false
-	if len(body) > maxWireBodyBytes {
-		body = body[:maxWireBodyBytes]
-		truncated = true
+	capped := body
+	capRaw := false
+	if len(capped) > maxRawBodyBytes {
+		capped = capped[:maxRawBodyBytes]
+		capRaw = true
 	}
 	var buf bytes.Buffer
-	if err := json.Indent(&buf, body, "", "  "); err != nil {
+	if err := json.Indent(&buf, capped, "", "  "); err != nil {
+		// Not parseable JSON (SSE or truncated stream): show the raw
+		// text, pretty-printed per SSE event where applicable.
 		buf.Reset()
-		buf.Write(body)
+		buf.Write(capped)
 	}
 	out := chat.SanitizeText(buf.String())
-	if truncated {
+	if out != "" && looksLikeSSE(out) {
+		out = prettySSE(out)
+	}
+	out = strings.TrimRight(out, "\n \r")
+	if len(out) > maxWireBodyBytes {
+		out = truncateAtLine(out, maxWireBodyBytes) + "\n… (truncated)"
+	} else if capRaw {
 		out += "\n… (truncated)"
 	}
 	return out
 }
 
-// indentBody indents a body under the frame header, clipping each line.
+// truncateAtLine cuts s to at most limit bytes without splitting a line.
+func truncateAtLine(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := s[:limit]
+	if i := strings.LastIndex(cut, "\n"); i > 0 {
+		return cut[:i]
+	}
+	return cut
+}
+
+// looksLikeSSE reports whether the body is an event stream: at least one
+// `data:` field line.
+func looksLikeSSE(s string) bool {
+	for _, l := range strings.Split(s, "\n") {
+		if strings.HasPrefix(l, "data:") {
+			return true
+		}
+	}
+	return false
+}
+
+// prettySSE renders each event as a block: the id/event fields dim and
+// compact, the data payload pretty-printed JSON. Events are separated by
+// a blank line.
+func prettySSE(s string) string {
+	events := strings.Split(s, "\n\n")
+	out := make([]string, 0, len(events))
+	for _, ev := range events {
+		var fields, datas []string
+		for _, l := range strings.Split(ev, "\n") {
+			if payload, ok := strings.CutPrefix(l, "data:"); ok {
+				var buf bytes.Buffer
+				if json.Indent(&buf, []byte(strings.TrimSpace(payload)), "  ", "  ") == nil {
+					datas = append(datas, "data:"+buf.String())
+					continue
+				}
+			}
+			if strings.TrimSpace(l) != "" {
+				fields = append(fields, l)
+			}
+		}
+		block := strings.Join(fields, " ")
+		if len(datas) > 0 {
+			if block != "" {
+				block += "\n"
+			}
+			block += strings.Join(datas, "\n")
+		}
+		if block != "" {
+			out = append(out, block)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
+// reJSONKey matches an indented JSON object key at the start of a line.
+var reJSONKey = regexp.MustCompile(`^(\s*)"([^"]+)":`)
+
+// indentBody indents a body under the frame header, highlighting JSON
+// keys and clipping each line with an ellipsis marker.
 func indentBody(body string, width int) string {
 	lines := strings.Split(body, "\n")
 	for i, l := range lines {
-		lines[i] = styleDim.Render(cell("  "+l, width))
+		if m := reJSONKey.FindStringSubmatch(l); m != nil {
+			l = m[1] + styleCardLabel.Render(`"`+m[2]+`":`) + l[len(m[0]):]
+		}
+		lines[i] = styleCardValue.Render(clipMark("  "+l, width))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// clipMark clips s to width display cells, marking a cut with an
+// ellipsis.
+func clipMark(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	return cell(s[:max(0, len(s)-2)], width-1) + "…"
 }
 
 // byteLabel renders a body size with a truncation marker.

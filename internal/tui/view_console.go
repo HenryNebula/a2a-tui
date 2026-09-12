@@ -73,7 +73,7 @@ var (
 )
 
 // paramsRows is the height of the params editor.
-const paramsRows = 5
+const paramsRows = 8
 
 // maxConsoleBytes caps each pretty-printed response body / frame.
 const maxConsoleBytes = 8 << 10 // 8KB

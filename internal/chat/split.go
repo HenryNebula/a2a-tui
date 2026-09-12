@@ -142,7 +142,8 @@ func BlocksForTask(t *a2a.Task, eng A2UIApplier) []Block {
 		return nil
 	}
 	var blocks []Block
-	blocks = append(blocks, NewTaskStateBlock(string(t.ID), t.Status.State, statusText(t)))
+	status := statusText(t)
+	blocks = append(blocks, NewTaskStateBlock(string(t.ID), t.Status.State, status))
 	for _, a := range t.Artifacts {
 		if b := NewArtifactBlock(string(t.ID), a); b != nil {
 			blocks = append(blocks, b)
@@ -151,7 +152,29 @@ func BlocksForTask(t *a2a.Task, eng A2UIApplier) []Block {
 	for _, m := range t.History {
 		blocks = append(blocks, SplitMessage(m, eng)...)
 	}
+	// A terminal task's final reply often lives only in the status
+	// message (the pill omits it there); render it as an agent turn
+	// unless the history already carries the same text.
+	if t.Status.State.Terminal() && status != "" && !historyHasText(t, status) {
+		blocks = append(blocks, NewAgentTextBlock(status))
+	}
 	return blocks
+}
+
+// historyHasText reports whether any history message carries text
+// identical to s.
+func historyHasText(t *a2a.Task, s string) bool {
+	for _, m := range t.History {
+		if m == nil {
+			continue
+		}
+		for _, p := range m.Parts {
+			if p != nil && p.Text() == s {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // statusText pulls the sanitized status message text of a task.

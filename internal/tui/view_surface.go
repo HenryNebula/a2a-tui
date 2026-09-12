@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,10 @@ type SurfacePane struct {
 	surfaceID string
 	syncedAt  time.Time
 	viewport  viewport.Model
+
+	// lastFocusLine is the marker line of the focused widget at the last
+	// render; a change means focus moved and the viewport should follow.
+	lastFocusLine int
 
 	// status is a transient footer message ("action sent…").
 	status string
@@ -355,36 +360,73 @@ func (p *SurfacePane) View(width, height int) string {
 		}
 		return styleDim.Render(cell(msg, width))
 	}
-	bodyHeight := height - 2 // status + hint lines
+	bodyHeight := height - 2 // status + hint lines (both always drawn)
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
 	p.viewport.Width = width
 	p.viewport.Height = bodyHeight
-	p.viewport.SetContent(p.widget.View(width, 0))
-	return p.viewport.View() + "\n" + p.footer(width)
+	content := p.widget.View(width, 0)
+	p.viewport.SetContent(content)
+	p.followFocus(content, bodyHeight)
+	pct := -1
+	if n := strings.Count(content, "\n") + 1; n > bodyHeight {
+		pct = int(p.viewport.ScrollPercent())
+	}
+	return p.viewport.View() + "\n" + p.footer(width, pct)
+}
+
+// followFocus keeps the focused widget (the "▸" marker line) on screen
+// when focus moves (tab); manual scrolling is otherwise left alone.
+func (p *SurfacePane) followFocus(content string, height int) {
+	line := -1
+	for i, l := range strings.Split(content, "\n") {
+		if strings.Contains(l, "▸") {
+			line = i
+			break
+		}
+	}
+	if line < 0 || line == p.lastFocusLine {
+		return
+	}
+	p.lastFocusLine = line
+	if top := p.viewport.YOffset; line < top || line >= top+height {
+		p.viewport.SetYOffset(max(0, line-height/3))
+	}
 }
 
 // footer renders the pane's status line and key hints.
-func (p *SurfacePane) footer(width int) string {
+// footer renders the two-line pane footer (hints over status); pct >= 0
+// adds a scroll-position hint when the surface overflows the viewport.
+func (p *SurfacePane) footer(width int, pct int) string {
 	if p.prompt != nil {
-		return styleSurfacePrompt.Render(cell("open: "+p.prompt.url+" (y/n)", width))
+		return styleSurfacePrompt.Render(cell("open: "+p.prompt.url+" (y/n)", width)) + "\n "
 	}
-	hint := "surface " + p.surfaceID
+	hint := "surface #" + chat.ShortID(p.surfaceID)
 	if p.widget.Dirty() {
 		hint += " · model edited"
 	}
-	hint += " · tab cycle · enter activate · esc back"
+	hint += " · tab cycle · enter activate · space toggle · ↑↓←→ adjust · esc back"
 	if p.eng != nil {
 		if ids := p.eng.SurfaceIDs(); len(ids) > 1 {
-			hint += " · [ ] switch: " + strings.Join(ids, " ")
+			short := make([]string, len(ids))
+			for i, id := range ids {
+				short[i] = chat.ShortID(id)
+			}
+			hint += " · [ ] switch: " + strings.Join(short, " ")
 		}
 	}
-	first := styleDim.Render(cell(hint, width))
-	if p.status == "" {
-		return first
+	if pct >= 0 {
+		hint += "  ↓ " + strconv.Itoa(pct) + "%"
 	}
-	return first + "\n" + styleStatus.Render(cell(" "+p.status, width))
+	first := styleDim.Render(cell(hint, width))
+	// The status row is always drawn (blank when idle) so the pane's
+	// height — and everything above it — stays put when a status appears.
+	status := " "
+	if p.status != "" {
+		status = cell(" "+p.status, width)
+	}
+	return first + "\n" + styleStatus.Render(status)
 }
 
 // actionMessage builds the outbound SDK message for a fired widget

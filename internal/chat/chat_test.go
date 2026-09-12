@@ -3,6 +3,7 @@ package chat
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 
@@ -296,11 +297,28 @@ func TestTaskStateBlockStyling(t *testing.T) {
 		t.Fatalf("label = %q", got)
 	}
 	out := b.Render(80)
-	if !strings.Contains(out, "input-required") || !strings.Contains(out, "t-9") {
+	if !strings.Contains(out, "input-required") || !strings.Contains(out, "#"+ShortID("t-9")) {
 		t.Fatalf("render = %q", out)
 	}
-	if !strings.Contains(out, "need more info") {
-		t.Fatalf("status text missing: %q", out)
+	// Interactive pills stay quiet: the question rides the status line.
+	if strings.Contains(out, "need more info") {
+		t.Fatalf("interactive pill repeats status text: %q", out)
+	}
+	// Live progress keeps its status text.
+	work := NewTaskStateBlock("t-9", a2a.TaskStateWorking, "sleeping")
+	if !strings.Contains(work.Render(80), "sleeping") {
+		t.Fatalf("working pill lost status text: %q", work.Render(80))
+	}
+	// Terminal pills drop the status text (the final agent message
+	// follows as its own block) and show the elapsed time when known.
+	done := NewTaskStateBlock("t-9", a2a.TaskStateCompleted, "all done")
+	done.Elapsed = 1500 * time.Millisecond
+	outDone := done.Render(80)
+	if strings.Contains(outDone, "all done") {
+		t.Fatalf("terminal pill repeats status text: %q", outDone)
+	}
+	if !strings.Contains(outDone, "took 1.5s") {
+		t.Fatalf("elapsed missing: %q", outDone)
 	}
 }
 
@@ -356,4 +374,43 @@ func lineVisualWidth(s string) int {
 		s = s[:i]
 	}
 	return len([]rune(s))
+}
+
+func TestMoveToEndFreshInstanceID(t *testing.T) {
+	// Regression: MoveToEnd once reused the current seq, colliding with
+	// the instanceID of a block appended just before — the render cache
+	// then rendered the pill as the message (and vice versa).
+	tr := NewTranscript()
+	tr.Append(NewStatusBlock("one"))
+	tr.ReplaceByID("task-state:t1", NewTaskStateBlock("t1", a2a.TaskStateCompleted, ""))
+	msg := NewAgentTextBlock("hello")
+	tr.Append(msg)
+	// Both the moved pill and the message must keep distinct renders.
+	tr.MoveToEnd("task-state:t1")
+	out := tr.Render(80, 0)
+	if !strings.Contains(out, "hello") || !strings.Contains(stripANSI(out), "completed") {
+		t.Fatalf("render lost a block:\n%s", out)
+	}
+	if strings.Count(out, "hello") != 1 {
+		t.Fatalf("message duplicated:\n%s", out)
+	}
+}
+
+func stripANSI(s string) string {
+	out := make([]rune, 0, len(s))
+	esc := false
+	for _, r := range s {
+		if r == 0x1b {
+			esc = true
+			continue
+		}
+		if esc {
+			if r == 'm' {
+				esc = false
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }

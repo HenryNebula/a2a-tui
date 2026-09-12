@@ -147,7 +147,7 @@ func (p *TasksPane) actionDetail(app *App) tea.Cmd {
 	if id == "" || app == nil || app.session == nil {
 		return nil
 	}
-	app.setStatus("fetching task " + id + "…")
+	app.setStatus("fetching task #" + chat.ShortID(id) + "…")
 	return app.fetchTask("task", id, nil)
 }
 
@@ -158,7 +158,7 @@ func (p *TasksPane) actionCancel(app *App) tea.Cmd {
 		return nil
 	}
 	conn := app.session.Conn()
-	app.setStatus("canceling task " + id + "…")
+	app.setStatus("canceling task #" + chat.ShortID(id) + "…")
 	return func() tea.Msg {
 		task, err := conn.CancelTask(context.Background(), id)
 		return taskResultMsg{op: "cancel", id: id, task: task, err: err}
@@ -172,7 +172,7 @@ func (p *TasksPane) actionSubscribe(app *App) {
 		return
 	}
 	app.session.Subscribe(context.Background(), id)
-	app.addStatus("subscribing to task " + id + " (reconnects with backoff)")
+	app.addStatus("subscribing to task #" + chat.ShortID(id) + " (reconnects with backoff)")
 	app.refreshTranscript()
 }
 
@@ -216,15 +216,15 @@ func (p *TasksPane) View(width, height int) string {
 	return p.viewList(width, height)
 }
 
-// viewList renders the registry table plus the hint footer.
+// viewList renders the summary line, registry table and hint footer.
 func (p *TasksPane) viewList(width, height int) string {
 	var body string
 	if len(p.tasks) == 0 {
 		body = styleDim.Render("no tasks observed yet — send a message, then /tasks")
 	} else {
-		body = p.table(width)
+		body = p.summary(width) + "\n\n" + p.table(width)
 	}
-	footer := styleDim.Render(cell("up/down select · enter detail · c cancel · s subscribe · r refresh · esc back", width))
+	footer := styleDim.Render("  " + cell(p.listHint(), width-2))
 	bodyHeight := max(1, height-1)
 	p.viewport.Width = width
 	p.viewport.Height = bodyHeight
@@ -232,10 +232,47 @@ func (p *TasksPane) viewList(width, height int) string {
 	return p.viewport.View() + "\n" + footer
 }
 
+// summary renders the "N tasks · …" line above the table.
+func (p *TasksPane) summary(width int) string {
+	live, done := 0, 0
+	for _, m := range p.tasks {
+		if m.Terminal() {
+			done++
+		} else {
+			live++
+		}
+	}
+	line := strconv.Itoa(len(p.tasks)) + " tasks"
+	if live > 0 {
+		line += " · " + strconv.Itoa(live) + " live"
+	}
+	if done > 0 {
+		line += " · " + strconv.Itoa(done) + " finished"
+	}
+	return "  " + styleCardTitle.Render(cell(line, width-2))
+}
+
+// listHint builds the footer: cancel/subscribe only apply to a live task.
+func (p *TasksPane) listHint() string {
+	hint := "↑↓/jk select · enter detail"
+	if !p.selectedTerminal() {
+		hint += " · c cancel · s subscribe"
+	}
+	return hint + " · r refresh · esc back"
+}
+
+// selectedTerminal reports whether the cursor sits on a terminal task.
+func (p *TasksPane) selectedTerminal() bool {
+	if p.cursor < 0 || p.cursor >= len(p.tasks) {
+		return true
+	}
+	return p.tasks[p.cursor].Terminal()
+}
+
 // table renders the task rows: id · state pill · updated-ago · title.
 func (p *TasksPane) table(width int) string {
 	const gap = "  "
-	idW, stW, agW := 16, 14, 8
+	idW, stW, agW := 10, 14, 8
 	titleW := width - 2 - (idW + stW + agW + 3*len(gap))
 	if titleW < 8 {
 		// Narrow terminal: shrink the id column before losing the title.
@@ -246,31 +283,50 @@ func (p *TasksPane) table(width int) string {
 	var b strings.Builder
 	head := styleCardHeader.Render(fitCell("id", idW)) + gap +
 		styleCardHeader.Render(fitCell("state", stW)) + gap +
-		styleCardHeader.Render(fitCell("updated", agW)) + gap +
+		styleCardHeader.Render(fitCellRight("updated", agW)) + gap +
 		styleCardHeader.Render(fitCell("title", titleW))
 	b.WriteString("  " + head + "\n")
+	b.WriteString("  " + styleDim.Render(strings.Repeat("─", max(0, width-4))) + "\n")
 
 	now := time.Now()
 	for i, m := range p.tasks {
-		marker := "  "
-		if i == p.cursor {
-			marker = "► "
+		selected := i == p.cursor
+		// The cursor bar must survive nested cell styles: every cell,
+		// gap and the row padding carry the selection background — an
+		// unstyled gap would split the bar.
+		valueStyle, dimStyle, gapStyle := styleCardValue, styleDim, lipgloss.NewStyle()
+		stateStyle := styleTaskState(m.State)
+		if selected {
+			bg := lipgloss.Color("236")
+			// Bright cells on the bar: dim text on 236 is hard to read.
+			valueStyle = valueStyle.Background(bg)
+			dimStyle = styleCardValue.Background(bg)
+			stateStyle = stateStyle.Background(bg)
+			gapStyle = gapStyle.Background(bg)
 		}
-		state := styleTaskState(m.State).Render(fitCell(chat.StateLabel(m.State), stW))
-		ago := fitCell(updatedAgo(now.Sub(m.UpdatedAt)), agW)
-		title := fitCell(m.Title, titleW)
-		if m.Terminal() {
-			ago = styleDim.Render(ago)
-			title = styleDim.Render(title)
+		gapStr := gapStyle.Render(gap)
+		state := stateStyle.Render(fitCell(chat.StateLabel(m.State), stW))
+		ago := dimStyle.Render(fitCellRight(updatedAgo(now.Sub(m.UpdatedAt)), agW))
+		title := dimStyle.Render(fitCell(m.Title, titleW))
+		// A2A task IDs are UUIDv7: the leading characters are a shared
+		// timestamp, so the tail identifies. The full ID stays in the
+		// detail view (enter).
+		row := valueStyle.Render(fitCell("#"+chat.ShortID(m.ID), idW)) + gapStr + state + gapStr +
+			ago + gapStr + title
+		if pad := width - 4 - lipgloss.Width(row); pad > 0 {
+			row += gapStyle.Render(strings.Repeat(" ", pad))
 		}
-		row := styleCardValue.Render(fitCell(marker+m.ID, idW+2)) + gap + state + gap +
-			ago + gap + title
-		if i == p.cursor {
-			row = lipgloss.NewStyle().Bold(true).Render(row)
-		}
-		b.WriteString("  " + row + "\n")
+		b.WriteString("  " + gapStyle.Render("  ") + row + "\n")
 	}
 	return b.String()
+}
+
+// fitCellRight truncates s to exactly n display cells, right-aligned.
+func fitCellRight(s string, n int) string {
+	if pad := n - lipgloss.Width(s); pad > 0 {
+		return strings.Repeat(" ", pad) + s
+	}
+	return fitCell(s, n)
 }
 
 // viewDetail renders the fetched task with the transcript's block set.

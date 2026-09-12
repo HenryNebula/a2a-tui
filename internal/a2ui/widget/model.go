@@ -26,6 +26,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/HenryNebula/a2a-tui/internal/a2ui"
 )
@@ -87,6 +88,10 @@ type focusable struct {
 	cursor int
 	// dirty marks user edits not yet acknowledged by the agent.
 	dirty bool
+	// touched marks widgets the user has edited at least once; check
+	// hints only render for touched widgets (or after an activation
+	// attempt), never on a pristine surface.
+	touched bool
 	// lastWritten is the last value this widget wrote at path (refresh
 	// dirty-tracking: an external write equal to it must not clobber the
 	// user's editor).
@@ -124,6 +129,10 @@ type Model struct {
 	// flash is a transient hint shown under the focused component (e.g.
 	// "checks failed").
 	flash string
+	// activateAttempted records that the user tried to activate a button
+	// (enter/space on one). Check-failure hints stay hidden on a pristine
+	// surface until a value was touched or an activation was attempted.
+	activateAttempted bool
 }
 
 // New materializes the surface and collects the focusables in display
@@ -286,7 +295,8 @@ func (m *Model) newFocusable(n *a2ui.Node, scope string) *focusable {
 	case *a2ui.TextFieldProps:
 		f.kind = kindTextField
 		f.path = bindingPath(props.Value, scope)
-		f.input = newEditor(m, n, props.Placeholder.EvalString(n.EvalContext(m.evalCtx())), props.Variant == "obscured")
+		f.input = newEditor(m, n, props.Placeholder.EvalString(n.EvalContext(m.evalCtx())),
+			props.Variant == "obscured", fieldBodyW(props.Variant)-1)
 	case *a2ui.CheckBoxProps:
 		f.kind = kindCheckBox
 		f.path = bindingPath(props.Value, scope)
@@ -294,7 +304,7 @@ func (m *Model) newFocusable(n *a2ui.Node, scope string) *focusable {
 		f.kind = kindChoicePicker
 		f.path = bindingPath(props.Value, scope)
 		if props.Filterable {
-			f.input = newEditor(m, n, "filter…", false)
+			f.input = newEditor(m, n, "filter…", false, inputWidth)
 		}
 	case *a2ui.SliderProps:
 		f.kind = kindSlider
@@ -302,7 +312,7 @@ func (m *Model) newFocusable(n *a2ui.Node, scope string) *focusable {
 	case *a2ui.DateTimeInputProps:
 		f.kind = kindDateTime
 		f.path = bindingPath(props.Value, scope)
-		f.input = newEditor(m, n, dateTimePlaceholder(props.EnableDate, props.EnableTime), false)
+		f.input = newEditor(m, n, dateTimePlaceholder(props.EnableDate, props.EnableTime), false, dateBodyW-1)
 	default:
 		return nil
 	}
@@ -313,19 +323,25 @@ func (m *Model) newFocusable(n *a2ui.Node, scope string) *focusable {
 	return f
 }
 
-// newEditor builds the embedded text input seeded from the bound value.
-func newEditor(m *Model, n *a2ui.Node, placeholder string, obscured bool) textinput.Model {
+// newEditor builds the embedded text input seeded from the bound value,
+// rendering width cells wide (see fieldBodyW: the editor pads its view to
+// Width cells plus one cursor cell, matching the unfocused bracket
+// interior). An empty placeholder renders a blank editor (no synthetic
+// word). The cursor carries an explicit contrast style — a reverse block
+// in the accent color — so the insertion point stays visible even on
+// terminals where a bare reverse space disappears.
+func newEditor(m *Model, n *a2ui.Node, placeholder string, obscured bool, width int) textinput.Model {
 	ti := textinput.New()
 	ti.Prompt = ""
-	ti.Width = inputWidth
+	ti.Width = width
 	ti.CharLimit = 0
 	ti.Placeholder = placeholder
+	ti.Cursor.Style = lipgloss.NewStyle().Reverse(true).
+		Foreground(lipgloss.Color("231")).
+		Background(lipgloss.Color("176"))
 	if obscured {
 		ti.EchoMode = textinput.EchoPassword
 		ti.EchoCharacter = '•'
-	}
-	if ti.Placeholder == "" {
-		ti.Placeholder = "(empty)"
 	}
 	ti.SetValue(currentString(m, n))
 	return ti
@@ -384,6 +400,7 @@ func dateTimePlaceholder(date, timeEnabled bool) string {
 func (f *focusable) adopt(old *focusable, m *Model) {
 	f.cursor = old.cursor
 	f.dirty = old.dirty
+	f.touched = old.touched
 	f.lastWritten = old.lastWritten
 	if f.kind != old.kind {
 		return // component changed type: start fresh
@@ -730,6 +747,9 @@ func (m *Model) updateButton(f *focusable, s string) (ActionOut, bool, error) {
 	if s != "enter" && s != " " {
 		return ActionOut{}, false, nil
 	}
+	// The user tried to act: from now on failing checks may show their
+	// hints (a pristine surface renders no validation errors).
+	m.activateAttempted = true
 	props, ok := f.node.Component.Props.(*a2ui.ButtonProps)
 	if !ok {
 		return ActionOut{}, true, nil
@@ -801,6 +821,7 @@ func (m *Model) setValue(f *focusable, val any) error {
 		return fmt.Errorf("widget: bind %s: %w", f.path, err)
 	}
 	f.dirty = true
+	f.touched = true
 	f.lastWritten = val
 	m.dirty = true
 	return nil

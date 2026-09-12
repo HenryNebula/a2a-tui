@@ -6,14 +6,13 @@ import (
 )
 
 var (
-	colorAccent = lipgloss.Color("205")
-	colorDim    = lipgloss.Color("241")
+	colorAccent = lipgloss.Color("176")
+	colorDim    = lipgloss.Color("245")
 	colorError  = lipgloss.Color("203")
 	colorOK     = lipgloss.Color("42")
 
-	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("62")).Padding(0, 1)
 	styleDim      = lipgloss.NewStyle().Foreground(colorDim)
-	styleHelp     = lipgloss.NewStyle().Foreground(colorDim)
+	styleHelp     = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 	styleInputBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), true).BorderForeground(colorDim).Padding(0, 1)
 
 	styleCardTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231"))
@@ -43,13 +42,15 @@ func styleState(state string) lipgloss.Style {
 }
 
 // styleTaskState returns the pill style for a task state. Live states are
-// colored (and the interactive ones bold); terminal states are dimmed so
-// finished work recedes behind live work.
+// colored (and the interactive ones bold); completed/failed keep their
+// semantic color so the dashboard reads at a glance, while canceled and
+// unknown states recede.
 func styleTaskState(s a2a.TaskState) lipgloss.Style {
-	if s.Terminal() {
-		return lipgloss.NewStyle().Foreground(colorDim)
-	}
 	switch s {
+	case a2a.TaskStateCompleted:
+		return lipgloss.NewStyle().Foreground(colorOK)
+	case a2a.TaskStateFailed, a2a.TaskStateRejected:
+		return lipgloss.NewStyle().Foreground(colorError)
 	case a2a.TaskStateInputRequired, a2a.TaskStateAuthRequired:
 		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	case a2a.TaskStateWorking:

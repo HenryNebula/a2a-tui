@@ -19,3 +19,4 @@ coverage.out
 # Stray root-level build outputs (go build ./cmd/... without -o)
 /a2a-tui
 /a2a-fixture-agent
+scripts/visual/out/

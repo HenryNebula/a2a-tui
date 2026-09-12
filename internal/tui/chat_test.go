@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+
+	"github.com/HenryNebula/a2a-tui/internal/chat"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/HenryNebula/a2a-tui/internal/agent"
@@ -168,8 +170,8 @@ func TestAgentEventsRenderTranscript(t *testing.T) {
 		t.Fatalf("completed pill missing:\n%s", out)
 	}
 	// The two state pills for t-1 must have replaced each other: exactly
-	// one "task t-1" occurrence.
-	if got := strings.Count(out, "task t-1"); got != 1 {
+	// one short-id pill occurrence.
+	if got := strings.Count(out, "#"+chat.ShortID("t-1")); got != 1 {
 		t.Fatalf("task pill appears %d times, want 1:\n%s", got, out)
 	}
 	if a.transcript.Len() <= before {
@@ -191,8 +193,11 @@ func TestInputRequiredContinuation(t *testing.T) {
 		t.Fatalf("pending input not tracked: %+v", a.pending)
 	}
 	out := rendered(a)
-	if !strings.Contains(out, "input-required") || !strings.Contains(out, "reply to task t-in") {
-		t.Fatalf("hint missing:\n%s", out)
+	if !strings.Contains(out, "input-required") {
+		t.Fatalf("pill missing:\n%s", out)
+	}
+	if !strings.Contains(a.statusText, "input needed") {
+		t.Fatalf("status line missing the question: %q", a.statusText)
 	}
 
 	// The next plain send must attach taskID + contextID.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -117,7 +118,6 @@ func (p *HelpPane) View(width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	footer := styleDim.Render(cell("f1 / ? / esc close · up/down scroll", width))
 	if p.cache == "" || p.cacheW != width {
 		p.cacheW = width
 		p.cache = p.render(width)
@@ -126,6 +126,13 @@ func (p *HelpPane) View(width, height int) string {
 	p.viewport.Width = width
 	p.viewport.Height = bodyHeight
 	p.viewport.SetContent(p.cache)
+	hint := "f1 / ? / esc close · up/down scroll"
+	if n := strings.Count(p.cache, "\n") + 1; n > bodyHeight {
+		// The document does not fit: make the hidden part discoverable.
+		hint = "f1 / ? / esc close · up/down scroll · " +
+			strconv.Itoa(int(p.viewport.ScrollPercent())) + "%"
+	}
+	footer := styleDim.Render(cell(hint, width))
 	return p.viewport.View() + "\n" + footer
 }
 
