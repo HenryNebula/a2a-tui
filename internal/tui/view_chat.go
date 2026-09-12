@@ -207,12 +207,11 @@ func (a *App) maybeAutoFocusSurface() {
 		return
 	}
 	ids := a.session.Engine().SurfaceIDs()
-	if len(ids) <= a.lastSurfaceCount {
-		a.lastSurfaceCount = max(a.lastSurfaceCount, len(ids))
-		return
-	}
 	grew := len(ids) > a.lastSurfaceCount
 	a.lastSurfaceCount = len(ids)
+	// Any change in the live-surface set re-points the placeholder's
+	// zoom-back hint.
+	a.setPlaceholder()
 	if !grew {
 		return
 	}

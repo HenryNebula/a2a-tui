@@ -445,16 +445,28 @@ func (a *App) cancelActive() tea.Cmd {
 }
 
 // setPlaceholder points the input placeholder at what the box can
-// actually do right now: a reply target while a task waits on input.
+// actually do right now: a reply target while a task waits on input, and
+// a zoom-back hint while a live surface sits behind the transcript.
 func (a *App) setPlaceholder() {
 	switch {
 	case a.pending != nil:
 		a.input.Placeholder = "Reply to task #" + chat.ShortID(a.pending.taskID) + "…"
+	case a.connState == "connected" && a.liveSurfaceCount() > 0:
+		a.input.Placeholder = "Message the agent…  (^f back to the form · /help for commands)"
 	case a.connState == "connected":
 		a.input.Placeholder = placeholderConnected
 	default:
 		a.input.Placeholder = placeholderDisconnected
 	}
+}
+
+// liveSurfaceCount reports how many A2UI surfaces are live (0 without a
+// session).
+func (a *App) liveSurfaceCount() int {
+	if a.session == nil {
+		return 0
+	}
+	return len(a.session.Engine().SurfaceIDs())
 }
 
 // fitInputHeight grows the input box with its content (paste can add

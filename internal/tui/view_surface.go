@@ -169,7 +169,10 @@ func (a *App) sendSurfaceAction(out widget.ActionOut) tea.Cmd {
 	a.addStatus("a2ui action " + out.Action.Name + " → " + a.session.Conn().BaseURL())
 	// The conversation continues where the reply lands: hand the view
 	// back to the transcript (the surface stays live and ^f re-opens it).
+	// The status line carries the zoom-back hint — the global footer's
+	// ^f entry is easy to miss right after the pane switch.
 	a.pane = paneTranscript
+	a.setStatus("form action " + out.Action.Name + " sent · ^f reopens the form")
 	a.refreshTranscript()
 	return a.spinnerCmd()
 }
