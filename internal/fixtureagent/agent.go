@@ -50,6 +50,9 @@ var KeywordHelp = []struct {
 	{"push", "slow status updates; register a push webhook to receive them"},
 	{"slow <seconds>", "working, a cancelable sleep, completed"},
 	{"fail", "failed task"},
+	{"markdown", "rich markdown reply: headings, list, code block, table"},
+	{"wide", "oversized table row and code line (wrap/clip behavior)"},
+	{"hist", "long task history (eight status messages before completion)"},
 	{"cancelme <seconds>", "long working phase; CancelTask moves it to canceled"},
 	{"a2ui form", "contact-form surface exercising every input component"},
 	{"a2ui dynamic", "formatString-bound text plus a live-update button"},
@@ -185,6 +188,12 @@ func (a *Agent) Execute(ctx context.Context, ec *a2asrv.ExecutorContext) iter.Se
 			a.runSlow(x, args)
 		case "fail":
 			a.runFail(x)
+		case "markdown":
+			a.runMarkdown(x)
+		case "wide":
+			a.runWide(x)
+		case "hist":
+			a.runHist(x)
 		case "cancelme":
 			a.runCancelMe(x, args)
 		case "skills":
@@ -350,6 +359,48 @@ func (a *Agent) runSlow(x *execution, args []string) {
 // runFail fails the task with an explanatory message.
 func (a *Agent) runFail(x *execution) {
 	x.status(a2a.TaskStateFailed, "deliberate failure (fixture)")
+}
+
+// markdownDoc is the markdown scenario reply: one message exercising
+// headings, lists, inline code, a fenced block and a table so clients
+// render real markdown rather than plain text.
+const markdownDoc = "# Fixture report\n\n" +
+	"A **rich markdown** reply with structure, for renderer checks.\n\n" +
+	"## Checklist\n- first item\n- second item with `inline code`\n\n" +
+	"## Snippet\n```go\nfunc main() { fmt.Println(\"fixture\") }\n```\n\n" +
+	"## Numbers\n| name   | value |\n| ------ | ----: |\n| chunks |     3 |\n| bytes  |   128 |\n"
+
+// runMarkdown completes the task with the rich markdown document.
+func (a *Agent) runMarkdown(x *execution) {
+	if !x.status(a2a.TaskStateWorking, "composing markdown") {
+		return
+	}
+	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, x.ec, a2a.NewTextPart(markdownDoc))
+	x.emit(a2a.NewStatusUpdateEvent(x.ec, a2a.TaskStateCompleted, msg))
+}
+
+// runWide completes with content wider than any terminal: an oversized
+// table row plus an unbreakable code line, to exercise wrap/clip paths.
+func (a *Agent) runWide(x *execution) {
+	wide := "# Wide content\n\n" +
+		"| " + strings.Repeat("left-column ", 12) + "| " + strings.Repeat("right ", 12) + "|\n" +
+		"| " + strings.Repeat("---", 20) + " | " + strings.Repeat("---", 20) + " |\n" +
+		"| " + strings.Repeat("data ", 14) + "| " + strings.Repeat("value ", 14) + "|\n\n" +
+		"`" + strings.Repeat("unbreakable_token_", 16) + "`\n"
+	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, x.ec, a2a.NewTextPart(wide))
+	x.emit(a2a.NewStatusUpdateEvent(x.ec, a2a.TaskStateCompleted, msg))
+}
+
+// runHist accumulates a long task history — every status update's message
+// is recorded server-side — before completing, for /history and
+// history-length exercises.
+func (a *Agent) runHist(x *execution) {
+	for i := 1; i <= 8; i++ {
+		if !x.status(a2a.TaskStateWorking, fmt.Sprintf("history step %d of 8", i)) {
+			return
+		}
+	}
+	x.status(a2a.TaskStateCompleted, "history complete")
 }
 
 // runCancelMe works for the requested duration unless CancelTask lands

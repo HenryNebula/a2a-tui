@@ -171,10 +171,9 @@ def run_main(agent_url, c, r):
     shot("07-input-required-answered", c, r)
 
     type_msg("a2ui form")
-    time.sleep(1.2)
-    key("C-f")
+    wait_for(r"surface #", what="auto-focused surface pane")
     time.sleep(0.8)
-    shot("08-surface-form", c, r)
+    shot("08-surface-autoform", c, r)
     send("Ada Lovelace")
     time.sleep(0.4)
     key("Tab")
@@ -226,6 +225,26 @@ def run_main(agent_url, c, r):
     time.sleep(0.8)
     shot("17-error-shown", c, r)
 
+    type_msg("markdown")
+    wait_for(r"Fixture report")
+    time.sleep(0.8)
+    shot("30-markdown-reply", c, r)
+
+    type_msg("wide")
+    wait_for(r"Wide content")
+    time.sleep(0.8)
+    shot("31-wide-clipped", c, r)
+
+    # Pending indicator: scroll up while a slow task runs; its completion
+    # arrives with the user scrolled and must surface as "↓ N new".
+    type_msg("slow 3")
+    wait_for(r"working · #", what="working state")
+    key("Up")  # empty input: arrows browse, no typing in progress
+    time.sleep(0.5)
+    wait_for(r"new · End jumps down", timeout=10, what="pending indicator")
+    time.sleep(0.8)
+    shot("32-pending-new", c, r)
+
     kill_session()
 
 
@@ -242,8 +261,7 @@ def run_narrow(agent_url):
     shot("21-narrow-help", c, r)
     key("Escape")
     type_msg("a2ui form")
-    time.sleep(1.2)
-    key("C-f")
+    wait_for(r"surface #", what="narrow auto-focused surface")
     time.sleep(0.8)
     shot("22-narrow-surface", c, r)
     key("Escape")

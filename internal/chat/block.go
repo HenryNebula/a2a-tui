@@ -240,11 +240,11 @@ func (b *AgentTextBlock) Render(width int) string {
 			// separates, so drop that margin on line one — ANSI-aware,
 			// since glamour may open the line with escape codes.
 			l = trimLeftSpacesANSI(l, 2)
-			// Re-clip in case a wide element (table/code) still
-			// overflowed the reduced budget.
-			l = clipLine(l, max(20, width-prefixW))
 			first = false
 		}
+		// Glamour cannot break unbreakable tokens (wide tables, long
+		// code lines): every line is clipped to the labeled budget.
+		l = clipLine(l, max(20, width-prefixW))
 		lines[i] = prefix + l
 		prefix = pad // only the first content line is labeled
 	}

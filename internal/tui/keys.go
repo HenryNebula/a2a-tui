@@ -25,9 +25,10 @@ var keys = keyMap{
 	// ctrl+d is left to the focused textarea (its forward-delete binding);
 	// ctrl+c stays the quit chord.
 	Quit: key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-	// f1 always toggles help; "?" only when no text input has the keyboard
-	// (typing "?" must insert it into the chat box).
-	Help:           key.NewBinding(key.WithKeys("f1", "?"), key.WithHelp("f1", "help")),
+	// f1 toggles help (and /help). A bare "?" must never be a binding:
+	// single-character globals fire while typing — "?" is a character
+	// people put in messages.
+	Help:           key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 	Send:           key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 	Cancel:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 	PaneTranscript: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("^t", "chat")),

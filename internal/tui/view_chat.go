@@ -46,13 +46,21 @@ func (a *App) addError(prefix string, err error) {
 }
 
 // refreshTranscript pushes the rendered transcript into the viewport,
-// staying glued to the bottom when the user has not scrolled up.
+// staying glued to the bottom when the user has not scrolled up. While
+// the user is scrolled up, arriving blocks are counted instead and
+// surfaced through the status row (pendingNew) — the reading position is
+// never yanked away.
 func (a *App) refreshTranscript() {
 	atBottom := a.transcriptV.AtBottom()
+	n := a.transcript.Len()
 	a.transcriptV.SetContent(a.transcript.Render(a.transcriptV.Width, a.transcriptV.Height))
 	if atBottom {
 		a.transcriptV.GotoBottom()
+		a.pendingNew = 0
+	} else if n > a.lastTranscriptLen {
+		a.pendingNew += n - a.lastTranscriptLen
 	}
+	a.lastTranscriptLen = n
 }
 
 // handleAgentEvent applies one session event to the app state. It
@@ -182,10 +190,45 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 	}
 
 	a.syncSurfacePane()
+	a.maybeAutoFocusSurface()
 	a.syncTasksPane()
 	a.refreshTranscript()
 	cmds = append(cmds, a.armListener(), a.spinnerCmd())
 	return tea.Batch(cmds...)
+}
+
+// maybeAutoFocusSurface opens the surface pane when a NEW A2UI surface
+// arrives — a form the agent pushed is a question, and questions arrive
+// pre-focused (the Claude-prompt convention). It defers to the user's
+// own state: typing in the chat input or another keyboard pane keeps
+// focus, with a hint instead; an input-required question outranks it.
+func (a *App) maybeAutoFocusSurface() {
+	if a.session == nil {
+		return
+	}
+	ids := a.session.Engine().SurfaceIDs()
+	if len(ids) <= a.lastSurfaceCount {
+		a.lastSurfaceCount = max(a.lastSurfaceCount, len(ids))
+		return
+	}
+	grew := len(ids) > a.lastSurfaceCount
+	a.lastSurfaceCount = len(ids)
+	if !grew {
+		return
+	}
+	switch {
+	case a.pending != nil:
+		// A parked question owns the chat input; the form waits one
+		// keystroke away.
+		a.setStatus("form arrived — ^f to focus")
+	case a.pane != paneTranscript:
+		// The user is deliberately somewhere else; do not yank focus.
+		a.setStatus("form arrived — ^f to focus")
+	case strings.TrimSpace(a.input.Value()) != "":
+		a.setStatus("form arrived — ^f to focus")
+	default:
+		a.openSurface("")
+	}
 }
 
 // isCancelErr reports whether err is a local cancellation (Esc).

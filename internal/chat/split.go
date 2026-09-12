@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 
@@ -177,19 +178,18 @@ func historyHasText(t *a2a.Task, s string) bool {
 	return false
 }
 
-// statusText pulls the sanitized status message text of a task.
+// statusText returns the task's status-message text, one part per line:
+// the final reply is usually markdown, and flattening newlines would
+// destroy its structure on the fallback rendering path.
 func statusText(t *a2a.Task) string {
 	if t == nil || t.Status.Message == nil {
 		return ""
 	}
-	var out string
+	var lines []string
 	for _, p := range t.Status.Message.Parts {
 		if p != nil && p.Text() != "" {
-			if out != "" {
-				out += " "
-			}
-			out += p.Text()
+			lines = append(lines, p.Text())
 		}
 	}
-	return SanitizeLine(out)
+	return SanitizeText(strings.Join(lines, "\n"))
 }

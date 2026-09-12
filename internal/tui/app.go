@@ -9,6 +9,7 @@ package tui
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,16 +93,26 @@ type App struct {
 
 	// taskStart records when each task was first observed, so terminal
 	// pills can show how long the task took.
-	taskStart   map[string]time.Time
-	cardPane    CardPane
-	surfacePane SurfacePane
-	tasksPane   TasksPane
-	wirePane    WirePane
-	consolePane ConsolePane
-	helpPane    HelpPane
-	helpOpen    bool
-	input       textarea.Model
-	help        help.Model
+	taskStart map[string]time.Time
+
+	// lastSurfaceCount tracks live-surface growth: a newly created A2UI
+	// surface is a prompt awaiting input, and prompts open pre-focused.
+	lastSurfaceCount int
+
+	// pendingNew counts transcript blocks that arrived while the user was
+	// scrolled up (auto-follow is suspended for them); lastTranscriptLen
+	// drives the delta.
+	pendingNew        int
+	lastTranscriptLen int
+	cardPane          CardPane
+	surfacePane       SurfacePane
+	tasksPane         TasksPane
+	wirePane          WirePane
+	consolePane       ConsolePane
+	helpPane          HelpPane
+	helpOpen          bool
+	input             textarea.Model
+	help              help.Model
 
 	// pushPublicURL overrides the advertised webhook URL (--push-public-url
 	// / A2A_TUI_PUSH_URL) for agents behind a tunnel.
@@ -266,9 +277,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmd, _ := a.consolePane.Update(m, a)
 			return a, cmd
-		case keyMatches(m, keys.Help) && (m.String() != "?" || !a.input.Focused()):
-			// f1 always toggles help; "?" only when the chat input does not
-			// have the keyboard — a focused input must receive the character.
+		case keyMatches(m, keys.Help):
+			// f1 (or /help) toggles the overlay; no bare-character binding.
 			a.toggleHelp()
 			return a, nil
 		case keyMatches(m, keys.Cancel):
@@ -285,13 +295,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The wire pane consumes the scroll keys; everything else still
 		// reaches the input box. Plain "c" would swallow a typed character
 		// (the chat input keeps focus behind the pane), so clearing lives on
-		// ctrl+l here and "c" is never forwarded to the pane.
+		// ctrl+l here and "c" is never forwarded to the pane. Arrows go to
+		// the input while the user is typing (same arbitration as the
+		// transcript).
 		if a.pane == paneWire {
 			if keyMatches(m, keys.WireClear) {
 				a.wirePane.Clear()
 				return a, tea.Batch(cmds...)
 			}
-			if m.String() != "c" && a.wirePane.Update(msg) {
+			if m.String() != "c" && !scrollOwnedByInput(msg, a.input.Value()) && a.wirePane.Update(msg) {
 				return a, tea.Batch(cmds...)
 			}
 		}
@@ -341,14 +353,63 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !a.inputVisible() && a.ready {
 		return a, tea.Batch(cmds...)
 	}
+	// Arrow arbitration: with text in the input, Up/Down edit the
+	// (possibly multi-line) input; with an empty input they scroll the
+	// transcript — the user's state (typing vs browsing) picks the
+	// owner, so keys never double-fire. PgUp/PgDn/Home/End always
+	// scroll; everything else goes to the input (the viewport ignores
+	// plain characters).
 	var cmd tea.Cmd
-	a.input, cmd = a.input.Update(msg)
-	cmds = append(cmds, cmd)
+	if !scrollOwnedByInput(msg, a.input.Value()) {
+		// The bubbles viewport does not bind Home/End itself.
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "home":
+				a.transcriptV.GotoTop()
+			case "end":
+				a.transcriptV.GotoBottom()
+			}
+		}
+		a.transcriptV, cmd = a.transcriptV.Update(msg)
+		cmds = append(cmds, cmd)
+		// Returning to the bottom (End, PgDn, scrolling down) clears the
+		// unread count — everything is on screen again.
+		if a.pendingNew > 0 && a.transcriptV.AtBottom() {
+			a.pendingNew = 0
+		}
+	}
+	if !scrollOwnedByViewport(msg, a.input.Value()) {
+		a.input, cmd = a.input.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	a.fitInputHeight()
-
-	a.transcriptV, cmd = a.transcriptV.Update(msg)
-	cmds = append(cmds, cmd)
 	return a, tea.Batch(cmds...)
+}
+
+// isScrollKey reports whether the message is one of the viewport scroll
+// keys.
+func isScrollKey(msg tea.Msg) bool {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return false
+	}
+	switch k.String() {
+	case "up", "down", "pgup", "pgdown", "home", "end":
+		return true
+	}
+	return false
+}
+
+// scrollOwnedByInput reports whether a scroll-key message belongs to the
+// input editor: the user is typing, so arrows edit text, not the view.
+func scrollOwnedByInput(msg tea.Msg, input string) bool {
+	return isScrollKey(msg) && strings.TrimSpace(input) != ""
+}
+
+// scrollOwnedByViewport reports whether a scroll-key message belongs to
+// the viewport: the input is empty, so arrows browse history.
+func scrollOwnedByViewport(msg tea.Msg, input string) bool {
+	return isScrollKey(msg) && strings.TrimSpace(input) == ""
 }
 
 // cancelActive cancels in-flight sends/streams (Esc).
@@ -447,8 +508,9 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 		a.lastContextID = ""
 		a.pending = nil
 		// The new session owns a fresh A2UI engine and task registry;
-		// drop the old panes' state.
+		// drop the old panes' state (and its auto-focus counter).
 		a.surfacePane.Close()
+		a.lastSurfaceCount = 0
 		a.tasksPane = NewTasksPane()
 		if a.pane == paneSurface || a.pane == paneTasks {
 			a.pane = paneTranscript
@@ -871,11 +933,15 @@ func truncateMiddle(s string, maxLen int) string {
 }
 
 // statusLineView renders the one-line status bar: a pending question
-// outranks progress (the user's move beats the agent's), then the
-// spinner while work is in flight, else the last status text.
+// outranks progress (the user's move beats the agent's), then unread
+// arrivals while scrolled up, then the spinner while work is in flight,
+// else the last status text.
 func (a *App) statusLineView() string {
 	if a.pending != nil {
 		return styleSurfacePrompt.Render(" input needed · #" + chat.ShortID(a.pending.taskID) + " — reply below")
+	}
+	if a.pendingNew > 0 {
+		return styleSurfacePrompt.Render(" ↓ " + strconv.Itoa(a.pendingNew) + " new · End jumps down")
 	}
 	if a.inflight > 0 {
 		mode := "sending"

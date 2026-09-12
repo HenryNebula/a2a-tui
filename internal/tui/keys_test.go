@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/HenryNebula/a2a-tui/internal/chat"
 )
 
 // quits reports whether running cmd yields a (possibly batched) quit.
@@ -37,13 +41,39 @@ func TestQuestionMarkInsertsIntoFocusedInput(t *testing.T) {
 	}
 }
 
-// With no text input focused, "?" keeps its documented toggle meaning.
-func TestQuestionMarkTogglesHelpWhenNoInputFocused(t *testing.T) {
+// "?" is never a binding, in any focus state: single-character globals
+// fire while typing and "?" is an ordinary character. Help is f1//help.
+func TestQuestionMarkNeverTogglesHelp(t *testing.T) {
 	a := newTestApp(t, nil)
 	a.input.Blur()
 	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	if !a.helpOpen {
-		t.Fatal("? did not toggle help with no input focused")
+	if a.helpOpen {
+		t.Fatal("? toggled help even blurred")
+	}
+}
+
+// Arrows with text in the input edit the input, not the viewport; with an
+// empty input they scroll the transcript (typing vs browsing states).
+func TestArrowArbitration(t *testing.T) {
+	a := newTestApp(t, nil)
+	// Long content so the viewport can actually scroll.
+	for i := 0; i < 40; i++ {
+		a.transcript.Append(chat.NewStatusBlock(fmt.Sprintf("line %d", i)))
+	}
+	a.refreshTranscript()
+	a.transcriptV.GotoBottom()
+
+	a.input.SetValue("typing")
+	before := a.transcriptV.YOffset
+	update(t, a, tea.KeyMsg{Type: tea.KeyUp})
+	if a.transcriptV.YOffset != before {
+		t.Fatal("Up scrolled the viewport while the input had text")
+	}
+
+	a.input.SetValue("")
+	update(t, a, tea.KeyMsg{Type: tea.KeyUp})
+	if a.transcriptV.YOffset == before {
+		t.Fatal("Up did not scroll the viewport with an empty input")
 	}
 }
 
@@ -78,5 +108,37 @@ func TestCtrlCStillQuits(t *testing.T) {
 	a := newTestApp(t, nil)
 	if !quits(update(t, a, tea.KeyMsg{Type: tea.KeyCtrlC})) {
 		t.Fatal("ctrl+c must quit")
+	}
+}
+
+// New blocks that arrive while the user is scrolled up are counted on
+// the status row instead of yanking the reading position; returning to
+// the bottom clears the count.
+func TestPendingNewIndicator(t *testing.T) {
+	a := newTestApp(t, nil)
+	for i := 0; i < 40; i++ {
+		a.transcript.Append(chat.NewStatusBlock(fmt.Sprintf("line %d", i)))
+	}
+	a.refreshTranscript()
+	a.transcriptV.GotoBottom()
+	// Scroll up.
+	update(t, a, tea.KeyMsg{Type: tea.KeyUp})
+	if a.transcriptV.AtBottom() {
+		t.Fatal("precondition: not scrolled up")
+	}
+	// Two new blocks arrive.
+	a.transcript.Append(chat.NewStatusBlock("fresh 1"))
+	a.transcript.Append(chat.NewStatusBlock("fresh 2"))
+	a.refreshTranscript()
+	if a.transcriptV.AtBottom() {
+		t.Fatal("auto-follow yanked the viewport to the bottom")
+	}
+	if !strings.Contains(a.statusLineView(), "2 new") {
+		t.Fatalf("status = %q, want unread count", stripStyle(a.statusLineView()))
+	}
+	// Jump back to the bottom: count clears.
+	update(t, a, tea.KeyMsg{Type: tea.KeyEnd})
+	if a.pendingNew != 0 {
+		t.Fatalf("pendingNew = %d after returning to bottom", a.pendingNew)
 	}
 }

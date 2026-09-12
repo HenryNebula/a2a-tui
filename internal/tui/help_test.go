@@ -26,7 +26,7 @@ func TestHelpOverlayTogglesAndRenders(t *testing.T) {
 		// per-pane hints
 		"ctrl+l", "wire: clear",
 		// footer
-		"f1 / ? / esc close",
+		"f1 / esc close",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("overlay missing %q:\n%s", want, view)

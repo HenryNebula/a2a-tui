@@ -44,11 +44,14 @@ func deliverSurface(t *testing.T, a *App, envelopes string) {
 func TestSurfacePaneOpenEditSendEsc(t *testing.T) {
 	conn := &fakeConn{}
 	a := newTestApp(t, conn)
+	// Mid-typing users keep the chat input: the surface only hints, and
+	// ctrl+f focuses it afterwards.
+	a.input.SetValue("draft")
 	deliverSurface(t, a, formEnvelopeJSON)
-
 	if a.pane != paneTranscript {
-		t.Fatal("pane should still be transcript before focusing")
+		t.Fatal("surface stole focus while the user was typing")
 	}
+	a.input.Reset()
 
 	// ctrl+f opens the most recent surface from anywhere.
 	update(t, a, tea.KeyMsg{Type: tea.KeyCtrlF})
@@ -249,5 +252,46 @@ func TestSurfacePaneOpenURLBadSchemeIsRefusedNotPrompted(t *testing.T) {
 	view := a.surfacePane.View(80, 20)
 	if !strings.Contains(view, "refused non-http(s)") {
 		t.Fatalf("validation error not surfaced:\n%s", view)
+	}
+}
+
+// A surface the agent pushes while the user is idle opens pre-focused;
+// mid-typing it only hints, never yanks the input.
+func TestSurfaceAutoFocus(t *testing.T) {
+	a := newTestApp(t, nil)
+	mk := func(id string) *a2a.Part {
+		p := a2a.NewDataPart([]any{map[string]any{
+			"version": a2ui.VersionV1,
+			"createSurface": map[string]any{"surfaceId": id, "components": []any{
+				map[string]any{"id": "root", "component": "Text", "props": map[string]any{"value": "hi"}},
+			}},
+		}})
+		p.Metadata = map[string]any{"mimeType": a2ui.MimeTypeA2UI}
+		return p
+	}
+
+	// Idle: the pane switches to the surface automatically.
+	update(t, a, agentEventMsg{ev: agent.AgentMessageEvent{
+		Msg: a2a.NewMessage(a2a.MessageRoleAgent, mk("s-auto")),
+	}})
+	if a.pane != paneSurface {
+		t.Fatalf("pane = %v, want auto-focused surface", a.pane)
+	}
+
+	// Esc back to the transcript, start typing: a second surface must
+	// NOT steal focus, only hint.
+	update(t, a, tea.KeyMsg{Type: tea.KeyEscape})
+	if a.pane != paneTranscript {
+		t.Fatal("esc did not return to the transcript")
+	}
+	a.input.SetValue("half-written")
+	update(t, a, agentEventMsg{ev: agent.AgentMessageEvent{
+		Msg: a2a.NewMessage(a2a.MessageRoleAgent, mk("s-auto2")),
+	}})
+	if a.pane != paneTranscript {
+		t.Fatal("new surface stole focus while the user was typing")
+	}
+	if !strings.Contains(a.statusText, "form arrived") {
+		t.Fatalf("status = %q, want the ^f hint", a.statusText)
 	}
 }

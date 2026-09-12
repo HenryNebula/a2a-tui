@@ -126,10 +126,10 @@ func (p *HelpPane) View(width, height int) string {
 	p.viewport.Width = width
 	p.viewport.Height = bodyHeight
 	p.viewport.SetContent(p.cache)
-	hint := "f1 / ? / esc close · up/down scroll"
+	hint := "f1 / esc close · up/down scroll"
 	if n := strings.Count(p.cache, "\n") + 1; n > bodyHeight {
 		// The document does not fit: make the hidden part discoverable.
-		hint = "f1 / ? / esc close · up/down scroll · " +
+		hint = "f1 / esc close · up/down scroll · " +
 			strconv.Itoa(int(p.viewport.ScrollPercent())) + "%"
 	}
 	footer := styleDim.Render(cell(hint, width))
@@ -225,7 +225,7 @@ func (a *App) toggleHelp() {
 // the overlay and continues with normal key routing.
 func (a *App) handleHelpKey(m tea.KeyMsg) bool {
 	switch m.String() {
-	case "?", "esc", "f1":
+	case "esc", "f1":
 		a.helpOpen = false
 		return true
 	}
