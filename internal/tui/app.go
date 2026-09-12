@@ -208,6 +208,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.refreshTranscript()
 
 	case tea.KeyMsg:
+		// A multi-rune key message is a fast-typed or pasted word — but
+		// every bubbles editor matches bindings by msg.String(), so the
+		// words "right"/"left"/"up"/"down"/"enter"/… arriving as one
+		// message would be consumed as those KEYS: text vanishes, the
+		// cursor jumps. Split the word into single runes so it behaves
+		// exactly like slowly typed text (single-rune String()s never
+		// collide with multi-character key names).
+		if m.Type == tea.KeyRunes && len(m.Runes) > 1 {
+			for _, r := range m.Runes {
+				_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: m.Alt})
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
 		// The help overlay owns esc/?/f1 and the scroll keys while open; any
 		// other key closes it and keeps routing (so ctrl+k still opens the
 		// dashboard, ctrl+c still quits, typing still lands in the input).
@@ -527,7 +541,22 @@ func (a *App) handleConnectResult(m connectResultMsg) tea.Cmd {
 func (a *App) submit() tea.Cmd {
 	text := strings.TrimRight(a.input.Value(), "\n")
 	a.input.Reset()
+	a.fitInputHeight()
 	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	// A plain message typed before the session exists (still connecting,
+	// or the first connection failed) must not vanish: keep the draft in
+	// the box so one more Enter sends it once connected.
+	if a.session == nil && !strings.HasPrefix(text, "/") {
+		a.input.SetValue(text)
+		a.input.CursorEnd()
+		if a.connecting {
+			a.setStatus("still connecting — your message is kept, press enter again in a moment")
+		} else {
+			a.setStatus("not connected — /connect <url-or-name> first (your message is kept)")
+		}
+		a.setPlaceholder()
 		return nil
 	}
 	if strings.HasPrefix(text, "/") {
@@ -916,7 +945,10 @@ func (a *App) headerView() string {
 	renderedLeft := bar.Bold(true).Foreground(lipgloss.Color("231")).Render(" " + left + " ")
 	right := styleState(state).Background(lipgloss.Color("234")).Render(" " + badge + " ")
 	gapLen := max(1, a.width-lipgloss.Width(renderedLeft)-lipgloss.Width(right))
-	return renderedLeft + bar.Render(strings.Repeat(" ", gapLen)) + right
+	line := renderedLeft + bar.Render(strings.Repeat(" ", gapLen)) + right
+	// The header must be exactly one row on every terminal: clip rather
+	// than let a long agent name wrap the bar.
+	return cell(line, a.width)
 }
 
 // truncateMiddle shortens s to at most max runes, keeping both ends and
@@ -938,10 +970,10 @@ func truncateMiddle(s string, maxLen int) string {
 // else the last status text.
 func (a *App) statusLineView() string {
 	if a.pending != nil {
-		return styleSurfacePrompt.Render(" input needed · #" + chat.ShortID(a.pending.taskID) + " — reply below")
+		return styleSurfacePrompt.Render(cell(" input needed · #"+chat.ShortID(a.pending.taskID)+" — reply below", a.width))
 	}
 	if a.pendingNew > 0 {
-		return styleSurfacePrompt.Render(" ↓ " + strconv.Itoa(a.pendingNew) + " new · End jumps down")
+		return styleSurfacePrompt.Render(cell(" ↓ "+strconv.Itoa(a.pendingNew)+" new · End jumps down", a.width))
 	}
 	if a.inflight > 0 {
 		mode := "sending"
@@ -952,12 +984,15 @@ func (a *App) statusLineView() string {
 		if a.statusText != "" {
 			text = " " + a.statusText
 		}
-		return styleStatus.Render(a.spinner.View() + text)
+		return styleStatus.Render(cell(a.spinner.View()+text, a.width))
 	}
 	if a.statusText == "" {
 		return ""
 	}
-	return styleStatus.Render(" " + a.statusText)
+	// The status bar must occupy exactly one row: a long error string
+	// left unclipped wraps on the real terminal, scrolling the frame and
+	// smearing the previous render around the input box.
+	return styleStatus.Render(cell(" "+a.statusText, a.width))
 }
 
 func (a *App) helpView() string {

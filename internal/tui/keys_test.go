@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/HenryNebula/a2a-tui/internal/chat"
 )
@@ -140,5 +141,76 @@ func TestPendingNewIndicator(t *testing.T) {
 	update(t, a, tea.KeyMsg{Type: tea.KeyEnd})
 	if a.pendingNew != 0 {
 		t.Fatalf("pendingNew = %d after returning to bottom", a.pendingNew)
+	}
+}
+
+// Long status text must never exceed the terminal width: an unclipped
+// status row wraps on real terminals, scrolls the frame and smears stale
+// render around the input box.
+func TestStatusLineClippedToOneRow(t *testing.T) {
+	a := newTestApp(t, nil)
+	a.width = 60
+	a.connState = "error"
+	a.setStatus("connect: no agent card at http://127.0.0.1:9/dead-endpoint-path (A2A 1.0: card request failed: Get \"http://127.0.0.1:9/.well-known/agent-card.json\": dial tcp 127.0.0.1:9: connect: connection refused)")
+	for _, line := range strings.Split(a.statusLineView(), "\n") {
+		if w := lipgloss.Width(line); w > 60 {
+			t.Fatalf("status row is %d cols wide (max 60):\n%q", w, line)
+		}
+	}
+	// The header obeys the same rule with a very long agent name.
+	a.agentName = "extremely-long-agent-name-that-would-overflow-narrow-terminals-1234567890"
+	for w := 40; w <= 140; w += 7 {
+		a.width = w
+		for _, line := range strings.Split(a.headerView(), "\n") {
+			if got := lipgloss.Width(line); got > w {
+				t.Fatalf("header at %d cols rendered %d wide: %q", w, got, line)
+			}
+		}
+	}
+}
+
+// A message submitted before the session exists stays in the box — the
+// first connection is often still in flight (or has failed).
+func TestSubmitKeepsDraftWhenNotConnected(t *testing.T) {
+	a := newTestApp(t, nil)
+	a.session = nil
+	a.connecting = true
+	a.input.SetValue("hello right after launch")
+	update(t, a, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := a.input.Value(); got != "hello right after launch" {
+		t.Fatalf("draft lost on submit-while-connecting: %q", got)
+	}
+	if !strings.Contains(a.statusText, "kept") {
+		t.Fatalf("status = %q, want the kept-draft hint", a.statusText)
+	}
+}
+
+// A fast-typed or pasted word arrives as ONE multi-rune key message whose
+// String() is the word itself; bubbles editors match bindings by that
+// string, so the words "right"/"left"/"up"/"down" used to be consumed as
+// cursor keys and the text vanished. Multi-rune messages must behave
+// exactly like slowly typed text.
+func TestFastTypedWordsAreText(t *testing.T) {
+	a := newTestApp(t, nil)
+	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("go left then right, up and down")})
+	// detectOneMsg splits at spaces, so this arrives as several messages;
+	// each word must land verbatim.
+	got := a.input.Value()
+	for _, want := range []string{"left", "right", "down"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("word %q lost from %q", want, got)
+		}
+	}
+	if a.transcriptV.YOffset != 0 {
+		t.Fatalf("word 'up' moved the viewport: offset=%d", a.transcriptV.YOffset)
+	}
+}
+
+func TestPastedArrowWordReachesInput(t *testing.T) {
+	a := newTestApp(t, nil)
+	// One chunk, no spaces: the classic collision case.
+	update(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("right")})
+	if a.input.Value() != "right" {
+		t.Fatalf("input = %q, want the literal word", a.input.Value())
 	}
 }
