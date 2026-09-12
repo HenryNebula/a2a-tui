@@ -34,10 +34,12 @@ visibility, a scripted fixture agent, and a live-agent smoke test).
 - **A2UI in the terminal** — the first terminal renderer for A2UI: all 18
   canonical components, rendered inline in the transcript and, on
   `ctrl+f`, as a focused interactive pane (text fields, checkboxes,
-  pickers, sliders, date-time inputs, buttons). Inputs bind locally to the
-  surface data model; a Button press sends the action envelope back to the
-  agent, whose `updateComponents` / `updateDataModel` envelopes mutate the
-  live surface. Unknown components degrade gracefully.
+  pickers, sliders, date-time inputs, buttons). A surface the agent sends
+  opens pre-focused (a question arrives ready to answer) unless you are
+  mid-typing. Inputs bind locally to the surface data model; a Button
+  press sends the action envelope back to the agent, whose
+  `updateComponents` / `updateDataModel` envelopes mutate the live
+  surface. Unknown components degrade gracefully.
 - **Testing tooling**: agent-card viewer (skills, capabilities, security
   schemes), raw wire capture with a wire pane and a raw-frame peek on
   every error, a raw JSON-RPC console for arbitrary methods (dialect-aware
@@ -100,15 +102,22 @@ Global:
 | --- | --- |
 | `enter` | send message / run slash command |
 | `alt+enter`, `ctrl+j` | newline in the input box |
+| `up`/`down` | with text in the input: edit it; with an empty input: scroll the transcript |
+| `pgup`/`pgdn`, `home`/`end` | scroll the transcript (`end` also clears the unread marker) |
 | `esc` | cancel the active send/stream; leave the surface/console pane |
 | `ctrl+t` | transcript pane |
-| `ctrl+g` | agent-card pane (scroll: `up`/`down`, `pgup`/`pgdown`, `home`/`end`) |
+| `ctrl+g` | agent-card pane (scroll: `up`/`down`/`j`/`k`, `pgup`/`pgdown`, `home`/`end`; `esc`/`q` back) |
 | `ctrl+k` | tasks dashboard (cursor: `up`/`down`; `enter` detail, `c` cancel, `s` subscribe, `r` refresh) |
 | `ctrl+w` | wire pane: raw framed request/response traffic (`ctrl+l` clears) |
 | `ctrl+e` | raw JSON-RPC console |
-| `ctrl+f` | focus the most recent A2UI surface |
+| `ctrl+f` | focus the most recent A2UI surface (surfaces auto-open pre-focused when the agent sends one) |
 | `f1` | help overlay (full key + command reference) |
 | `ctrl+c` | quit |
+
+Plain typing always goes to the chat input — no bare-letter global
+shortcuts (help is `f1` or `/help`, never `?`). While you are scrolled
+up, new messages surface as a `↓ N new · End jumps down` count in the
+status row instead of yanking the view.
 
 Raw JSON-RPC console pane:
 
@@ -183,6 +192,9 @@ Behavior is scripted by the first keyword of each message
 | `push` | slow status updates; register a push webhook to receive them |
 | `slow <seconds>` | working, a cancelable sleep, completed |
 | `fail` | failed task |
+| `markdown` | rich markdown reply: headings, list, code block, table |
+| `wide` | oversized table row and unbreakable code line (wrap/clip behavior) |
+| `hist` | long task history (eight status messages; `historyLength` honored) |
 | `cancelme <seconds>` | long working phase; CancelTask moves it to canceled |
 | `a2ui form` | contact-form surface exercising every input component |
 | `a2ui dynamic` | formatString-bound text plus a live-update button |
@@ -260,6 +272,14 @@ Tests live in-package next to the code. Notable layouts:
   `internal/compat03/testdata/` (captured live 0.3 wire frames).
 - Fuzzing: `internal/compat03/sse_fuzz_test.go` (hostile SSE input).
 - Hostile-input tests for the A2UI engine (`internal/a2ui/hostile_test.go`).
+- End-to-end scenario tests against the in-process fixture agent
+  (`internal/e2e/`): every fixture keyword, protocol errors, task
+  history, and cell-width assertions that rendered output never
+  overflows the terminal.
+- Visual eval harness (`scripts/visual/shoot.py`): drives the TUI in a
+  hermetic tmux session through scripted scenarios against the fixture
+  agent and captures each screen as text, ANSI, HTML and a rendered PNG
+  (headless Chrome). Output lands in `scripts/visual/out/` (gitignored).
 - Live tests, never run by CI — need the `live` build tag *and* an env
   opt-in, e.g. `A2A_TUI_LIVE=1 go test -tags live ./...`.
 
