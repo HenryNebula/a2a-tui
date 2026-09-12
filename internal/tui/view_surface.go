@@ -167,6 +167,9 @@ func (a *App) sendSurfaceAction(out widget.ActionOut) tea.Cmd {
 		a.session.SendRaw(context.Background(), msg, opts)
 	}
 	a.addStatus("a2ui action " + out.Action.Name + " → " + a.session.Conn().BaseURL())
+	// The conversation continues where the reply lands: hand the view
+	// back to the transcript (the surface stays live and ^f re-opens it).
+	a.pane = paneTranscript
 	a.refreshTranscript()
 	return a.spinnerCmd()
 }

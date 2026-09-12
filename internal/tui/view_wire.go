@@ -59,6 +59,10 @@ func NewWirePane() WirePane {
 // captured stay visible even when capture is off.
 func (a *App) openWirePane() {
 	a.pane = paneWire
+	// Open at the newest exchange: the viewport defaults to offset 0 and
+	// auto-follow only engages once the view is already at the bottom,
+	// so without this the pane shows the OLDEST captured frames first.
+	a.wirePane.viewport.GotoBottom()
 }
 
 // Sync installs a fresh wire-log snapshot (oldest first).
@@ -121,12 +125,12 @@ func (p *WirePane) View(width, height int) string {
 	if atBottom {
 		p.viewport.GotoBottom() // auto-follow like the transcript
 	}
-	hint := "ctrl+l clear · ↑/↓ pgup/pgdn scroll · frames: " + strconv.Itoa(len(p.visible()))
+	hint := "esc back · ctrl+l clear · ↑/↓ pgup/pgdn scroll · frames: " + strconv.Itoa(len(p.visible()))
 	if last := p.lastStatus(); last != "" {
 		hint += " · last " + last
 	}
 	if n := strings.Count(p.cache, "\n") + 1; n > bodyHeight {
-		hint += " · " + strconv.Itoa(int(p.viewport.ScrollPercent())) + "%"
+		hint += " · " + strconv.Itoa(int(p.viewport.ScrollPercent()*100)) + "%"
 	}
 	footer := styleDim.Render(cell(hint, width))
 	return p.viewport.View() + "\n" + footer
@@ -257,21 +261,24 @@ func prettyBody(body []byte) string {
 	}
 	out = strings.TrimRight(out, "\n \r")
 	if len(out) > maxWireBodyBytes {
-		out = truncateAtLine(out, maxWireBodyBytes) + "\n… (truncated)"
+		// Keep the TAIL: the newest SSE events (and the end of any
+		// long response) matter more than the head when a body is cut.
+		out = "… (older lines truncated)\n" + keepLastLines(out, maxWireBodyBytes)
 	} else if capRaw {
 		out += "\n… (truncated)"
 	}
 	return out
 }
 
-// truncateAtLine cuts s to at most limit bytes without splitting a line.
-func truncateAtLine(s string, limit int) string {
+// keepLastLines returns the last <=limit bytes of s without splitting a
+// line (the leading partial line is dropped).
+func keepLastLines(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
-	cut := s[:limit]
-	if i := strings.LastIndex(cut, "\n"); i > 0 {
-		return cut[:i]
+	cut := s[len(s)-limit:]
+	if i := strings.Index(cut, "\n"); i >= 0 && i < len(cut)-1 {
+		return cut[i+1:]
 	}
 	return cut
 }

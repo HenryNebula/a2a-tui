@@ -89,8 +89,13 @@ func TestWirePaneTruncatesBigBodies(t *testing.T) {
 	p := NewWirePane()
 	p.Sync([]wirelog.Entry{{At: time.Now(), Method: "POST", URL: "http://x/", ReqBody: big}})
 	view := stripStyle(p.View(80, 40))
-	if !strings.Contains(view, "(truncated)") {
+	if !strings.Contains(view, "older lines truncated") {
 		t.Fatalf("truncation marker missing (rendered %d chars)", len(view))
+	}
+	// The TAIL survives a cut: a fragment starting mid-element (",{")
+	// can only come from the body's final bytes.
+	if !strings.Contains(view, `,{"pad"`) {
+		t.Fatalf("truncation kept the head, not the tail:\n%s", view[:400])
 	}
 }
 

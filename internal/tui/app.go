@@ -238,6 +238,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.pane = paneTranscript
 			return a, nil
 		}
+		// Same for the wire pane: esc goes back to the transcript (and
+		// still cancels an in-flight stream, matching the footer's
+		// esc-cancel promise).
+		if a.pane == paneWire && m.String() == "esc" {
+			a.pane = paneTranscript
+			return a, a.cancelActive()
+		}
 		switch {
 		case keyMatches(m, keys.Quit):
 			return a, tea.Quit

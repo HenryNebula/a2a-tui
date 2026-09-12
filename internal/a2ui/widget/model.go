@@ -467,6 +467,18 @@ func (m *Model) Update(msg tea.Msg) (ActionOut, bool, error) {
 	if f == nil {
 		return ActionOut{}, false, nil
 	}
+	if s := key.String(); (s == "up" || s == "down") && !f.usesArrows() {
+		// Vertical arrows cycle focus on the widgets that don't use them
+		// for value adjustment (a picker's option cursor and a slider's
+		// 10% steps keep them): up behaves like shift+tab, down like tab,
+		// with the same wrapping.
+		delta := 1
+		if s == "up" {
+			delta = -1
+		}
+		m.focusNext(delta)
+		return ActionOut{}, true, nil
+	}
 	return m.updateFocused(f, key)
 }
 
@@ -502,6 +514,17 @@ func (f *focusable) usesInput() bool {
 	return false
 }
 
+// usesArrows reports whether the widget's own editing semantics consume the
+// vertical arrows: a picker's option cursor and a slider's 10% steps. On
+// every other widget up/down cycle focus instead (see Update).
+func (f *focusable) usesArrows() bool {
+	switch f.kind {
+	case kindChoicePicker, kindSlider:
+		return true
+	}
+	return false
+}
+
 // updateFocused dispatches one key to the focused component's editing
 // semantics.
 func (m *Model) updateFocused(f *focusable, key tea.KeyMsg) (ActionOut, bool, error) {
@@ -528,7 +551,8 @@ func (m *Model) updateFocused(f *focusable, key tea.KeyMsg) (ActionOut, bool, er
 }
 
 // updateTextField forwards editing keys to the embedded input and writes
-// the value through on every change.
+// the value through on every change. (Up/down never arrive here: Update
+// cycles focus with them on widgets that don't adjust values with arrows.)
 func (m *Model) updateTextField(f *focusable, key tea.KeyMsg) (ActionOut, bool, error) {
 	switch key.String() {
 	case "enter":
@@ -536,8 +560,6 @@ func (m *Model) updateTextField(f *focusable, key tea.KeyMsg) (ActionOut, bool, 
 		// and advances to the next field — standard form flow.
 		m.focusNext(1)
 		return ActionOut{}, true, nil
-	case "up", "down":
-		return ActionOut{}, false, nil // let the pane viewport scroll
 	}
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(key)
@@ -575,13 +597,12 @@ func (m *Model) writeNumber(f *focusable) error {
 }
 
 // updateDateTime edits an ISO 8601 input, writing only parseable values.
+// (Up/down never arrive here: Update cycles focus with them.)
 func (m *Model) updateDateTime(f *focusable, key tea.KeyMsg) (ActionOut, bool, error) {
 	switch key.String() {
 	case "enter":
 		m.focusNext(1)
 		return ActionOut{}, true, nil
-	case "up", "down":
-		return ActionOut{}, false, nil
 	}
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(key)

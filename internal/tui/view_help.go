@@ -130,7 +130,7 @@ func (p *HelpPane) View(width, height int) string {
 	if n := strings.Count(p.cache, "\n") + 1; n > bodyHeight {
 		// The document does not fit: make the hidden part discoverable.
 		hint = "f1 / esc close · up/down scroll · " +
-			strconv.Itoa(int(p.viewport.ScrollPercent())) + "%"
+			strconv.Itoa(int(p.viewport.ScrollPercent()*100)) + "%"
 	}
 	footer := styleDim.Render(cell(hint, width))
 	return p.viewport.View() + "\n" + footer

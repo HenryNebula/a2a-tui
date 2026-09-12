@@ -251,6 +251,59 @@ func TestFocusOrderAndKinds(t *testing.T) {
 	}
 }
 
+// TestArrowFocusNavigation verifies vertical arrows cycle focus on the
+// widgets that don't adjust values with them (up = shift+tab, down = tab,
+// same wrapping), while pickers and sliders keep the arrows for their own
+// cursor/stepping semantics.
+func TestArrowFocusNavigation(t *testing.T) {
+	m, _ := buildForm(t, "arrows", false)
+	// Down off a text field moves to the next focusable; up moves back.
+	key(t, m, press(tea.KeyDown))
+	if m.FocusedID() != "age-field" {
+		t.Fatalf("down focus = %q, want age-field", m.FocusedID())
+	}
+	key(t, m, press(tea.KeyUp))
+	if m.FocusedID() != "name-field" {
+		t.Fatalf("up focus = %q, want name-field", m.FocusedID())
+	}
+	// Up wraps backwards to the button (like shift+tab); down off the
+	// button wraps around to the first field.
+	key(t, m, press(tea.KeyUp))
+	if m.FocusedID() != "submit-btn" {
+		t.Fatalf("up wrap focus = %q, want submit-btn", m.FocusedID())
+	}
+	key(t, m, press(tea.KeyDown))
+	if m.FocusedID() != "name-field" {
+		t.Fatalf("down wrap focus = %q, want name-field", m.FocusedID())
+	}
+	// Checkboxes cycle too.
+	tab(t, m, 2) // subscribe-check
+	key(t, m, press(tea.KeyDown))
+	if m.FocusedID() != "plan-picker" {
+		t.Fatalf("down off checkbox focus = %q, want plan-picker", m.FocusedID())
+	}
+	// The picker keeps down for its option cursor: focus stays put and
+	// the cursor moved (space now selects the second option).
+	key(t, m, press(tea.KeyDown))
+	if m.FocusedID() != "plan-picker" {
+		t.Fatalf("down moved focus off the picker: %q", m.FocusedID())
+	}
+	key(t, m, space())
+	if v := get(t, m, "/plan"); v != "basic" {
+		t.Fatalf("/plan = %#v, want basic (picker cursor did not move)", v)
+	}
+	// The slider keeps down for 10% stepping: focus stays and the value
+	// drops (7 − 10% of the range snapped onto the step grid → 6).
+	tab(t, m, 2) // volume-slider
+	key(t, m, press(tea.KeyDown))
+	if m.FocusedID() != "volume-slider" {
+		t.Fatalf("down moved focus off the slider: %q", m.FocusedID())
+	}
+	if v := get(t, m, "/volume"); v != float64(6) {
+		t.Fatalf("/volume = %#v, want 6 (slider did not step)", v)
+	}
+}
+
 func TestTextFieldEditWritesDataModel(t *testing.T) {
 	m, _ := buildForm(t, "text", false)
 	key(t, m, runes("Ada"))
